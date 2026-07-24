@@ -74,13 +74,14 @@
 - **Cloudflare Email Routing**: Both domains have catch-all rules pointing to `phantom-mail-backend`.
 - **Future Extensibility (V3 Self-Hosted)**: The domain list is config-driven (`DOMAIN_LIST` env var, comma-separated). Additional domains can be added on the self-hosted branch without code changes.
 
-### Outbound Sending (Resend) — Domain Availability:
-| Stage | Available Sending Domains | Resend Plan Needed |
+### Outbound Sending (Resend) — Domain & Tracking Setup:
+| Component | Configuration / Domain | Status |
 | :--- | :--- | :--- |
-| **Now (V2 Launch)** | `@unkn0wn.qzz.io` only | Free (1 domain limit) |
-| **Future upgrade** | `@unkn0wn.qzz.io` + `@phant0m.qzz.io` | Resend Pro ($20/mo) |
+| **Primary Sender** | `@unkn0wn.qzz.io` | Verified |
+| **Custom Tracking Domain** | `track.unkn0wn.qzz.io` (CNAME `links1.r*.dns.com`) | Verified ✅ |
+| **Secondary Sender** | `@phant0m.qzz.io` | Reserved for Resend Pro ($20/mo) |
 
-**IMPORTANT**: Both domains always receive mail via Cloudflare Email Routing (free, unlimited) — Resend restriction only affects OUTBOUND sending.
+**IMPORTANT**: Both domains always receive mail via Cloudflare Email Routing (free, unlimited) — Resend restriction only affects OUTBOUND sending. All outbound emails on `@unkn0wn.qzz.io` use `track.unkn0wn.qzz.io` for branded open/click tracking.
 
 ### Compose / Send UI Domain Selector:
 - Compose modal shows a **"Send from" domain dropdown**.
