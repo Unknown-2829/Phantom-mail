@@ -74,9 +74,38 @@
 - **Cloudflare Email Routing**: Both domains have catch-all rules pointing to `phantom-mail-backend`.
 - **Future Extensibility (V3 Self-Hosted)**: The domain list is config-driven (`DOMAIN_LIST` env var, comma-separated). Additional domains can be added on the self-hosted branch without code changes.
 
+### Outbound Sending (Resend) — Domain Availability:
+| Stage | Available Sending Domains | Resend Plan Needed |
+| :--- | :--- | :--- |
+| **Now (V2 Launch)** | `@unkn0wn.qzz.io` only | Free (1 domain limit) |
+| **Future upgrade** | `@unkn0wn.qzz.io` + `@phant0m.qzz.io` | Resend Pro ($20/mo) |
+
+**IMPORTANT**: Both domains always receive mail via Cloudflare Email Routing (free, unlimited) — Resend restriction only affects OUTBOUND sending.
+
+### Compose / Send UI Domain Selector:
+- Compose modal shows a **"Send from" domain dropdown**.
+- Backend returns `ACTIVE_SEND_DOMAINS` list (env var, comma-separated).
+- If only 1 domain active: selector is shown but second domain is **greyed out with lock icon** + tooltip "Coming soon — upgrade in progress".
+- Premium users: domain choice shown prominently. Free users: locked to random assigned domain.
+- When Resend Pro is activated: add `phant0m.qzz.io` to `ACTIVE_SEND_DOMAINS` env var → UI unlocks automatically with zero code change.
+
 ---
 
-## 3. Detailed Component Architecture
+## 2.6 Real-Time Strategy & KV Quota Savings
+
+### Why Webhooks + Pusher = Zero Wasted KV Reads:
+| Old Method | New Method | KV Impact |
+| :--- | :--- | :--- |
+| Polling `GET /api/emails` every 3-5s | Pusher WebSocket push on new mail | **0 reads** until new mail arrives |
+| Polling Resend for delivery status | Resend Delivery Webhook (`/api/webhooks/resend`) | **1 KV write** only when event fires |
+| Polling fallback (no Pusher) | ETag / `If-None-Match` 304 response | ~0 bytes, minimal reads |
+
+**Resend Webhook Events handled** (`/api/webhooks/resend`):
+- `email.delivered` → Update sent record `status: delivered` in KV
+- `email.bounced` → Mark as bounced, surface error in Sent tab UI
+- `email.clicked` → Increment click counter in tracking record
+
+Result: **~17,000–28,000 fewer KV reads per user per day** compared to naive polling.
 
 ```
 [ Browser / Mobile PWA / Client App ]
