@@ -1,64 +1,41 @@
-async function triggerPusherEvent(env, channel, eventName, data) {
-    if (!env.PUSHER_APP_ID || !env.PUSHER_KEY || !env.PUSHER_SECRET || !env.PUSHER_CLUSTER) return;
-    const host = `api-${env.PUSHER_CLUSTER || 'ap2'}.pusher.com`;
-    const path = `/apps/${env.PUSHER_APP_ID}/events`;
-    const bodyStr = JSON.stringify({ name: eventName, channel: channel, data: JSON.stringify(data) });
-
-    const encoder = new TextEncoder();
-    const hashBuffer = await crypto.subtle.digest('MD5', encoder.encode(bodyStr));
-    const bodyMd5 = Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-    const timestamp = Math.floor(Date.now() / 1000);
-    const queryString = `auth_key=${env.PUSHER_KEY}&auth_timestamp=${timestamp}&auth_version=1.0&body_md5=${bodyMd5}`;
-    const stringToSign = `POST\n${path}\n${queryString}`;
-
-    const key = await crypto.subtle.importKey('raw', encoder.encode(env.PUSHER_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const signatureBuffer = await crypto.subtle.sign('HMAC', key, encoder.encode(stringToSign));
-    const authSignature = Array.from(new Uint8Array(signatureBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-
+export async function onRequestDelete(context) {
     try {
-        await fetch(`https://${host}${path}?${queryString}&auth_signature=${authSignature}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: bodyStr
-        });
-    } catch (e) {}
+        const { request, env } = context;
+        const url = new URL(request.url);
+        const key = url.searchParams.get("key");
+        const address = url.searchParams.get("address");
+
+        if (!key || !address) {
+            return jsonResponse({ error: "key and address required" }, 400);
+        }
+
+        // Security: key must belong to the address being queried
+        if (!key.startsWith(`email:${address}:`)) {
+            return jsonResponse({ error: "Forbidden" }, 403);
+        }
+
+        // Delete the email from KV
+        await env.EMAILS.delete(key);
+
+        // If there are R2 attachment keys passed, also delete from R2
+        const r2Keys = url.searchParams.getAll("r2key");
+        if (env.ATTACHMENTS && r2Keys.length > 0) {
+            await Promise.all(r2Keys.map(k => env.ATTACHMENTS.delete(k)));
+        }
+
+        return jsonResponse({ success: true });
+    } catch (error) {
+        return jsonResponse({ error: error.message }, 500);
+    }
 }
 
-export async function onRequestDelete(context) {
-    const { request, env } = context;
-    const url = new URL(request.url);
-    const key = url.searchParams.get('key');
-
-    if (!key) {
-        return new Response(JSON.stringify({ error: 'Key parameter required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    }
-
-    const itemStr = await env.EMAILS.get(key);
-    if (itemStr) {
-        try {
-            const item = JSON.parse(itemStr);
-            // Delete R2 attachments if present
-            if (item.attachments && Array.isArray(item.attachments)) {
-                for (const att of item.attachments) {
-                    if (att.key) {
-                        await env.ATTACHMENTS.delete(att.key);
-                    }
-                }
-            }
-        } catch (e) {}
-    }
-
-    await env.EMAILS.delete(key);
-
-    // Notify Pusher channel
-    const parts = key.split(':');
-    if (parts.length >= 3) {
-        const addressHash = parts[2];
-        const channel = `private-inbox-${addressHash.slice(0, 32)}`;
-        context.waitUntil(triggerPusherEvent(env, channel, 'email_deleted', { key }));
-    }
-
-    return new Response(JSON.stringify({ success: true, deletedKey: key }), {
-        headers: { 'Content-Type': 'application/json' }
+function jsonResponse(data, status = 200) {
+    return new Response(JSON.stringify(data), {
+        status,
+        headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store"
+        }
     });
 }
