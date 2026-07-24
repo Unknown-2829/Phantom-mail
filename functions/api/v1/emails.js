@@ -1,98 +1,70 @@
-/**
- * Developer API - Get Emails
- * GET /api/v1/emails?address=xxx@domain.com
- * Header: X-API-Key: YOUR_API_KEY
- */
+async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
-export async function onRequestOptions() {
-    return new Response(null, {
-        status: 204,
-        headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, OPTIONS',
-            'Access-Control-Allow-Headers': 'X-API-Key'
-        }
-    });
+async function validateApiKey(env, keyHeader) {
+    if (!keyHeader) return null;
+    const keyDataStr = await env.API_KEYS.get(keyHeader);
+    if (!keyDataStr) return null;
+    try { return JSON.parse(keyDataStr); } catch (e) { return null; }
 }
 
 export async function onRequestGet(context) {
     const { request, env } = context;
+    const url = new URL(request.url);
+    const keyHeader = request.headers.get('x-api-key') || url.searchParams.get('api_key');
+    const address = url.searchParams.get('address');
 
-    // Get API key from header
-    const apiKey = request.headers.get('X-API-Key');
-    if (!apiKey) {
-        return jsonResponse({ error: 'API key required' }, 401);
+    if (!address) {
+        return new Response(JSON.stringify({ error: 'Address parameter required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    // Validate API key
-    if (!env.API_KEYS) {
-        return jsonResponse({ error: 'Service unavailable' }, 503);
-    }
-    const keyData = await env.API_KEYS.get(apiKey, { type: 'json' });
+    const keyData = await validateApiKey(env, keyHeader);
     if (!keyData) {
-        return jsonResponse({ error: 'Invalid API key' }, 401);
+        return new Response(JSON.stringify({ error: 'Valid X-API-Key required' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
     }
 
-    try {
-        const url = new URL(request.url);
-        const address = url.searchParams.get('address');
+    const plan = keyData.plan || (keyHeader.startsWith('pm_pro_') ? 'premium' : 'free');
+    const dailyLimit = plan === 'premium' ? 500 : 10;
+    const today = new Date().toISOString().split('T')[0];
+    const usageKey = `api_usage:recv:${keyHeader}:${today}`;
 
-        if (!address) {
-            return jsonResponse({ error: 'Address parameter required' }, 400);
-        }
-
-        // Validate address format
-        if (address.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) {
-            return jsonResponse({ error: 'Invalid email address format' }, 400);
-        }
-
-        if (!env.TEMP_EMAILS) {
-            return jsonResponse({ error: 'Service unavailable' }, 503);
-        }
-
-        // Verify email exists
-        const emailExists = await env.TEMP_EMAILS.get(address);
-        if (!emailExists) {
-            return jsonResponse({ error: 'Email not found or expired' }, 404);
-        }
-
-        // Get all emails for this address
-        const emails = [];
-        const prefix = `email:${address}:`;
-        const list = await env.EMAILS.list({ prefix });
-
-        for (const key of list.keys) {
-            const emailData = await env.EMAILS.get(key.name, { type: 'json' });
-            if (emailData) {
-                // Remove large data for API response
-                const { htmlBody, ...emailSummary } = emailData;
-                emailSummary.hasHtml = !!htmlBody;
-                emails.push(emailSummary);
-            }
-        }
-
-        // Sort by timestamp descending
-        emails.sort((a, b) => b.timestamp - a.timestamp);
-
-        return jsonResponse({
-            success: true,
-            address,
-            count: emails.length,
-            emails
-        });
-
-    } catch (error) {
-        console.error('API emails error:', error);
-        return jsonResponse({ error: 'Server error' }, 500);
+    const currentUsage = parseInt(await env.INBOX_META.get(usageKey) || '0', 10);
+    if (currentUsage >= dailyLimit) {
+        return new Response(JSON.stringify({ error: `API daily receive limit reached (${currentUsage}/${dailyLimit} used today).` }), { status: 429, headers: { 'Content-Type': 'application/json' } });
     }
-}
 
-function jsonResponse(data, status = 200) {
-    return new Response(JSON.stringify(data), {
-        status,
-        headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+    await env.INBOX_META.put(usageKey, String(currentUsage + 1), { expirationTtl: 86400 });
+
+    const parts = address.split('@');
+    const local = parts[0];
+    const domain = parts[1] || 'unkn0wn.qzz.io';
+    const domainPrefix = domain.split('.')[0];
+    const addressHash = await sha256Hex(address);
+
+    const listPrefix = `email:${domainPrefix}:${addressHash}:`;
+    const kvList = await env.EMAILS.list({ prefix: listPrefix, limit: 50 });
+
+    const emails = [];
+    for (const k of (kvList.keys || [])) {
+        const itemStr = await env.EMAILS.get(k.name);
+        if (itemStr) {
+            try {
+                const item = JSON.parse(itemStr);
+                emails.push(item);
+            } catch (e) {}
         }
-    });
+    }
+
+    const responseHeaders = { 'Content-Type': 'application/json' };
+    if (keyData.deprecated) responseHeaders['X-API-Warning'] = 'This API key is deprecated. Rotate within 24 hours.';
+
+    return new Response(JSON.stringify({
+        success: true,
+        address,
+        count: emails.length,
+        emails,
+        quota: { usedToday: currentUsage + 1, limitToday: dailyLimit, plan }
+    }), { headers: responseHeaders });
 }

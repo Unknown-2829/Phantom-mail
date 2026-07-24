@@ -1,16 +1,10 @@
-name = "phantom-mail-email-v2"
+name = "phantom-mail-admin"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
 [vars]
 MODE = "hosted"
-DOMAIN_PRIMARY = "unkn0wn.qzz.io"
-DOMAIN_SECONDARY = "phant0m.qzz.io"
-MAX_ATTACHMENT_SIZE_MB = "10"
-FREE_INBOX_CAP = "10"
-PREMIUM_INBOX_CAP = "30"
-FREE_MAIL_TTL_SEC = "3600"
-GLOBAL_MAIL_TTL_SEC = "1296000" # 15 days
+RESEND_QUOTA_LIMIT = "3000"
 
 [[kv_namespaces]]
 binding = "EMAILS"
@@ -29,4 +23,4 @@ binding = "ATTACHMENTS"
 bucket_name = "phantom-attachments"
 
 [triggers]
-crons = ["0 */6 * * *"] # 6-hour cron sweep
+crons = ["0 8 1 * *"] # Automated monthly report on 1st of every month at 08:00 UTC

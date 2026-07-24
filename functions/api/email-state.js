@@ -1,3 +1,4 @@
+// Helper to trigger Pusher event
 async function triggerPusherEvent(env, channel, eventName, data) {
     if (!env.PUSHER_APP_ID || !env.PUSHER_KEY || !env.PUSHER_SECRET || !env.PUSHER_CLUSTER) return;
     const host = `api-${env.PUSHER_CLUSTER || 'ap2'}.pusher.com`;
@@ -24,41 +25,45 @@ async function triggerPusherEvent(env, channel, eventName, data) {
     } catch (e) {}
 }
 
-export async function onRequestDelete(context) {
+export async function onRequestPatch(context) {
     const { request, env } = context;
-    const url = new URL(request.url);
-    const key = url.searchParams.get('key');
+    let body = {};
+    try { body = await request.json(); } catch (e) {}
 
+    const { key, read, starred } = body;
     if (!key) {
-        return new Response(JSON.stringify({ error: 'Key parameter required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ error: 'Email key required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const itemStr = await env.EMAILS.get(key);
-    if (itemStr) {
-        try {
-            const item = JSON.parse(itemStr);
-            // Delete R2 attachments if present
-            if (item.attachments && Array.isArray(item.attachments)) {
-                for (const att of item.attachments) {
-                    if (att.key) {
-                        await env.ATTACHMENTS.delete(att.key);
-                    }
-                }
-            }
-        } catch (e) {}
+    if (!itemStr) {
+        return new Response(JSON.stringify({ error: 'Email not found' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
     }
 
-    await env.EMAILS.delete(key);
+    const email = JSON.parse(itemStr);
+    if (typeof read === 'boolean') email.read = read;
+    if (typeof starred === 'boolean') email.starred = starred;
 
-    // Notify Pusher channel
+    // Retain existing TTL
+    await env.EMAILS.put(key, JSON.stringify(email), {
+        metadata: { read: email.read, starred: email.starred, from: email.from, subject: email.subject }
+    });
+
+    // Extract address hash from key for Pusher channel trigger
+    // key format: email:{domainPrefix}:{addressHash}:{timestamp}:{emailId}
     const parts = key.split(':');
     if (parts.length >= 3) {
         const addressHash = parts[2];
         const channel = `private-inbox-${addressHash.slice(0, 32)}`;
-        context.waitUntil(triggerPusherEvent(env, channel, 'email_deleted', { key }));
+        context.waitUntil(triggerPusherEvent(env, channel, 'email_updated', {
+            id: email.id,
+            key: email.key,
+            read: email.read,
+            starred: email.starred
+        }));
     }
 
-    return new Response(JSON.stringify({ success: true, deletedKey: key }), {
+    return new Response(JSON.stringify({ success: true, email }), {
         headers: { 'Content-Type': 'application/json' }
     });
 }

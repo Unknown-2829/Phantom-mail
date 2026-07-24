@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline — Phantom Mail</title>
+    <style>
+        body {
+            background-color: #07080f;
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            text-align: center;
+            padding: 20px;
+        }
+        .card {
+            background: #0d1117;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 16px;
+            padding: 40px;
+            max-width: 400px;
+            box-shadow: 0 0 40px rgba(0, 229, 179, 0.08);
+        }
+        .logo { width: 64px; height: 64px; margin-bottom: 20px; }
+        h1 { font-size: 24px; color: #00e5b3; margin-bottom: 10px; }
+        p { color: #64748b; font-size: 14px; line-height: 1.6; }
+        button {
+            margin-top: 20px;
+            background: #00e5b3;
+            color: #07080f;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <img src="https://assets.unknowns.app/logo.png" alt="Phantom Mail" class="logo">
+        <h1>You are Offline</h1>
+        <p>Please check your internet connection. Phantom Mail requires a network connection to receive temporary emails in real-time.</p>
+        <button onclick="window.location.reload()">Retry Connection</button>
+    </div>
+</body>
+</html>

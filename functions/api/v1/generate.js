@@ -1,136 +1,80 @@
-/**
- * Developer API - Generate Temp Email
- * POST /api/v1/generate
- * Header: X-API-Key: YOUR_API_KEY
- * Optional Body: { username: string } for custom username (premium)
- */
+const SYLLABLES = ['alpha', 'bravo', 'cyber', 'delta', 'echo', 'fox', 'ghost', 'hyper', 'iron', 'jade', 'kilo', 'lunar', 'matrix', 'nova', 'omni', 'phantom', 'quantum', 'rex', 'shadow', 'titan', 'ultra', 'vector', 'wave', 'xenon', 'yield', 'zero'];
 
-export async function onRequestOptions() {
-    return new Response(null, {
-        status: 204,
-        headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, X-API-Key'
-        }
-    });
+function generateRandomLocalPart() {
+    const s1 = SYLLABLES[Math.floor(Math.random() * SYLLABLES.length)];
+    const s2 = SYLLABLES[Math.floor(Math.random() * SYLLABLES.length)];
+    const num = Math.floor(1000 + Math.random() * 9000);
+    return `${s1}.${s2}${num}`;
+}
+
+async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function validateApiKey(env, keyHeader) {
+    if (!keyHeader) return null;
+    const keyDataStr = await env.API_KEYS.get(keyHeader);
+    if (!keyDataStr) return null;
+    try {
+        const keyData = JSON.parse(keyDataStr);
+        return keyData;
+    } catch (e) {
+        return null;
+    }
 }
 
 export async function onRequestPost(context) {
     const { request, env } = context;
+    const url = new URL(request.url);
+    const keyHeader = request.headers.get('x-api-key') || url.searchParams.get('api_key');
 
-    // Get API key from header
-    const apiKey = request.headers.get('X-API-Key');
-    if (!apiKey) {
-        return jsonResponse({ error: 'API key required' }, 401);
-    }
-
-    // Validate API key
-    if (!env.API_KEYS) {
-        return jsonResponse({ error: 'Service unavailable' }, 503);
-    }
-    const keyData = await env.API_KEYS.get(apiKey, { type: 'json' });
+    const keyData = await validateApiKey(env, keyHeader);
     if (!keyData) {
-        return jsonResponse({ error: 'Invalid API key' }, 401);
+        return new Response(JSON.stringify({ error: 'Valid X-API-Key required' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
     }
 
-    // Check rate limit (100/day free)
-    if (!env.API_USAGE) {
-        return jsonResponse({ error: 'Service unavailable' }, 503);
-    }
+    const plan = keyData.plan || (keyHeader.startsWith('pm_pro_') ? 'premium' : 'free');
+    const dailyLimit = plan === 'premium' ? 500 : 10;
     const today = new Date().toISOString().split('T')[0];
-    const usageKey = `usage:${apiKey}:${today}`;
-    let usage = parseInt(await env.API_USAGE.get(usageKey)) || 0;
+    const usageKey = `api_usage:gen:${keyHeader}:${today}`;
 
-    const limit = keyData.isPremium ? 10000 : 100;
-    if (usage >= limit) {
-        return jsonResponse({ error: 'Rate limit exceeded', limit, used: usage }, 429);
+    const currentUsage = parseInt(await env.INBOX_META.get(usageKey) || '0', 10);
+    if (currentUsage >= dailyLimit) {
+        return new Response(JSON.stringify({ error: `API daily generate limit reached (${currentUsage}/${dailyLimit} used today).` }), { status: 429, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (!env.TEMP_EMAILS) {
-        return jsonResponse({ error: 'Service unavailable' }, 503);
+    let reqBody = {};
+    try { reqBody = await request.json(); } catch (e) {}
+
+    const allowedDomains = ['unkn0wn.qzz.io', 'phant0m.qzz.io'];
+    let chosenDomain = reqBody.domain || allowedDomains[Math.floor(Math.random() * allowedDomains.length)];
+    if (!allowedDomains.includes(chosenDomain)) chosenDomain = 'unkn0wn.qzz.io';
+
+    const localPart = generateRandomLocalPart();
+    const email = `${localPart}@${chosenDomain}`;
+    const addressHash = await sha256Hex(email);
+
+    // Dedup check & registration
+    await env.INBOX_META.put(`dedup:${addressHash}`, '1', { expirationTtl: 3600 });
+    await env.INBOX_META.put(usageKey, String(currentUsage + 1), { expirationTtl: 86400 });
+
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+    await env.INBOX_META.put(`claim_nonce:${addressHash}`, nonce, { expirationTtl: 3600 });
+
+    const responseHeaders = { 'Content-Type': 'application/json' };
+    if (keyData.deprecated) {
+        responseHeaders['X-API-Warning'] = 'This API key is deprecated. Rotate within 24 hours.';
     }
 
-    try {
-        let email;
-        let body = {};
-        try {
-            body = await request.json();
-        } catch {
-            body = {};
-        }
-
-        // Custom username (premium only)
-        if (body.username) {
-            if (!keyData.isPremium) {
-                return jsonResponse({ error: 'Custom usernames require premium' }, 403);
-            }
-
-            const username = body.username.toLowerCase().replace(/[^a-z0-9._-]/g, '');
-            if (username.length < 3 || username.length > 30) {
-                return jsonResponse({ error: 'Username must be 3-30 characters' }, 400);
-            }
-
-            email = `${username}@unknownlll2829.qzz.io`;
-
-            // Check if exists
-            const exists = await env.TEMP_EMAILS.get(email);
-            if (exists) {
-                return jsonResponse({ error: 'Username already taken' }, 400);
-            }
-        } else {
-            // Generate random email
-            email = generateRandomEmail();
-
-            // Ensure unique
-            let attempts = 0;
-            while (await env.TEMP_EMAILS.get(email) && attempts < 5) {
-                email = generateRandomEmail();
-                attempts++;
-            }
-        }
-
-        // Store email
-        await env.TEMP_EMAILS.put(email, JSON.stringify({
-            createdAt: Date.now(),
-            apiGenerated: true,
-            apiKey: apiKey.substring(0, 8) + '...'
-        }), { expirationTtl: 3600 });
-
-        // Increment usage
-        await env.API_USAGE.put(usageKey, String(usage + 1), { expirationTtl: 86400 });
-
-        return jsonResponse({
-            success: true,
-            email,
-            expiresIn: 3600,
-            usage: {
-                today: usage + 1,
-                limit
-            }
-        });
-
-    } catch (error) {
-        console.error('API generate error:', error);
-        return jsonResponse({ error: 'Server error' }, 500);
-    }
-}
-
-function generateRandomEmail() {
-    const adjectives = ['cool', 'fast', 'smart', 'happy', 'lucky', 'bright', 'swift'];
-    const nouns = ['user', 'mail', 'box', 'temp', 'quick', 'test', 'demo'];
-    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-    const noun = nouns[Math.floor(Math.random() * nouns.length)];
-    const num = Math.floor(Math.random() * 9999);
-    return `${adj}${noun}${num}@unknownlll2829.qzz.io`;
-}
-
-function jsonResponse(data, status = 200) {
-    return new Response(JSON.stringify(data), {
-        status,
-        headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
-        }
-    });
+    return new Response(JSON.stringify({
+        success: true,
+        email,
+        domain: chosenDomain,
+        addressHash,
+        nonce,
+        expiresIn: 3600,
+        quota: { usedToday: currentUsage + 1, limitToday: dailyLimit, plan }
+    }), { headers: responseHeaders });
 }

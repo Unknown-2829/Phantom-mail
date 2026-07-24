@@ -1,254 +1,82 @@
-/**
- * Generate Temp Email API
- * Creates human-like email addresses with uniqueness check
- */
+// Server-side syllable generator for human-readable addresses
+const SYLLABLES = ['alpha', 'bravo', 'cyber', 'delta', 'echo', 'fox', 'ghost', 'hyper', 'iron', 'jade', 'kilo', 'lunar', 'matrix', 'nova', 'omni', 'phantom', 'quantum', 'rex', 'shadow', 'titan', 'ultra', 'vector', 'wave', 'xenon', 'yield', 'zero', 'atom', 'bolt', 'comet', 'drift', 'flare', 'pulse', 'spark', 'vortex', 'blaze'];
 
-// Extended human-like name components
-const firstNames = [
-    // English names
-    'james', 'john', 'robert', 'michael', 'david', 'william', 'richard', 'joseph', 'thomas', 'charles',
-    'mary', 'patricia', 'jennifer', 'linda', 'elizabeth', 'barbara', 'susan', 'jessica', 'sarah', 'karen',
-    'alex', 'chris', 'jordan', 'taylor', 'morgan', 'casey', 'riley', 'jamie', 'drew', 'blake',
-    'emma', 'olivia', 'ava', 'sophia', 'mia', 'luna', 'chloe', 'ella', 'grace', 'lily',
-    'liam', 'noah', 'oliver', 'lucas', 'mason', 'logan', 'ethan', 'aiden', 'jack', 'ryan',
-    // Indian names
-    'arjun', 'rahul', 'priya', 'aisha', 'ravi', 'neha', 'vikram', 'ananya', 'rohan', 'kavya',
-    'amit', 'pooja', 'sanjay', 'meera', 'karan', 'shreya', 'varun', 'divya', 'nikhil', 'tanya',
-    // International names
-    'omar', 'sara', 'ali', 'zara', 'yusuf', 'layla', 'adam', 'nadia', 'hassan', 'fatima',
-    'leo', 'mila', 'max', 'nina', 'felix', 'anna', 'oscar', 'elena', 'hugo', 'clara',
-    'kai', 'hana', 'yuki', 'sakura', 'ren', 'mei', 'jin', 'sora', 'ryu', 'akira',
-    // Modern/Trendy names
-    'nova', 'phoenix', 'river', 'sage', 'sky', 'storm', 'winter', 'aurora', 'violet', 'ivy',
-    'axel', 'zane', 'cole', 'dane', 'finn', 'gray', 'jace', 'knox', 'reid', 'theo',
-    // Tech-inspired names
-    'dev', 'code', 'byte', 'pixel', 'cyber', 'neo', 'tech', 'data', 'cloud', 'crypto'
-];
+function generateRandomLocalPart() {
+    const s1 = SYLLABLES[Math.floor(Math.random() * SYLLABLES.length)];
+    const s2 = SYLLABLES[Math.floor(Math.random() * SYLLABLES.length)];
+    const num = Math.floor(1000 + Math.random() * 9000);
+    return `${s1}.${s2}${num}`;
+}
 
-const lastNames = [
-    // English surnames
-    'smith', 'johnson', 'williams', 'brown', 'jones', 'garcia', 'miller', 'davis', 'martinez', 'wilson',
-    'anderson', 'taylor', 'thomas', 'moore', 'jackson', 'martin', 'lee', 'thompson', 'white', 'harris',
-    'clark', 'lewis', 'robinson', 'walker', 'young', 'allen', 'king', 'wright', 'scott', 'green',
-    'baker', 'adams', 'nelson', 'hill', 'campbell', 'mitchell', 'roberts', 'carter', 'phillips', 'evans',
-    'turner', 'torres', 'parker', 'collins', 'edwards', 'stewart', 'morris', 'murphy', 'rivera', 'cook',
-    // Indian surnames  
-    'sharma', 'patel', 'khan', 'singh', 'kumar', 'gupta', 'verma', 'joshi', 'reddy', 'rao',
-    'mehta', 'shah', 'mishra', 'chauhan', 'nair', 'iyer', 'pillai', 'menon', 'bhatia', 'chopra',
-    // International surnames
-    'kim', 'chen', 'wang', 'zhang', 'li', 'liu', 'yang', 'huang', 'zhao', 'wu',
-    'sato', 'suzuki', 'tanaka', 'yamamoto', 'watanabe', 'ito', 'nakamura', 'kobayashi', 'kato', 'yoshida',
-    'silva', 'santos', 'ferreira', 'oliveira', 'costa', 'pereira', 'almeida', 'carvalho', 'rocha', 'lima'
-];
-
-const adjectives = [
-    'cool', 'epic', 'pro', 'real', 'fast', 'smart', 'quick', 'super', 'mega', 'ultra',
-    'happy', 'lucky', 'sunny', 'brave', 'swift', 'bright', 'sharp', 'sleek', 'bold', 'prime'
-];
-
-const nouns = [
-    'wolf', 'hawk', 'tiger', 'eagle', 'lion', 'bear', 'fox', 'dragon', 'phoenix', 'panther',
-    'coder', 'ninja', 'wizard', 'master', 'guru', 'chief', 'boss', 'king', 'ace', 'star'
-];
-
-const separators = ['.', '_', ''];
-const yearSuffixes = ['90', '91', '92', '93', '94', '95', '96', '97', '98', '99', '00', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '20', '21', '22', '23', '24', '25'];
-const numberSuffixes = ['1', '2', '3', '4', '5', '7', '8', '9', '11', '12', '21', '22', '33', '42', '55', '66', '69', '77', '88', '99', '100', '123', '007', '321', '420', '777', '999'];
+async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 export async function onRequestPost(context) {
+    const { request, env } = context;
+    let reqBody = {};
     try {
-        const { env, request } = context;
+        reqBody = await request.json();
+    } catch (e) {}
 
-        // Check for a valid session token (authenticated users get unlimited generations)
-        const authHeader = request.headers.get('Authorization') || '';
-        const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-        let isAuthenticated = false;
-        if (token) {
-            const session = await env.EMAILS.get(`session:${token}`);
-            if (session) isAuthenticated = true;
-        }
-
-        // Apply IP-based rate limiting for unauthenticated requests
-        if (!isAuthenticated) {
-            const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-            const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-            const rlKey = `ratelimit:gen:${ip}:${today}`;
-            const count = parseInt((await env.EMAILS.get(rlKey)) || '0', 10);
-            if (count >= 30) {
-                return new Response(JSON.stringify({ error: 'Rate limit exceeded. Try again tomorrow.' }), {
-                    status: 429,
-                    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-                });
-            }
-            await env.EMAILS.put(rlKey, String(count + 1), { expirationTtl: 86400 });
-        }
-
-        // Generate unique human-like email with retry logic
-        let email;
-        let attempts = 0;
-        const maxAttempts = 5;
-
-        do {
-            email = generateHumanEmail();
-            const exists = await env.TEMP_EMAILS.get(email);
-            if (!exists) break;
-            attempts++;
-        } while (attempts < maxAttempts);
-
-        // If still not unique, add timestamp
-        if (attempts >= maxAttempts) {
-            const timestamp = Date.now().toString(36).slice(-4);
-            email = email.replace('@', timestamp + '@');
-        }
-
-        // Store in KV
-        const emailData = {
-            createdAt: Date.now(),
-            expiresAt: Date.now() + 3600000,
-        };
-
-        await env.TEMP_EMAILS.put(
-            email,
-            JSON.stringify(emailData),
-            { expirationTtl: 3600 }
-        );
-
-        return new Response(
-            JSON.stringify({ email }),
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'Cache-Control': 'no-store'
-                }
-            }
-        );
-    } catch (error) {
-        return new Response(
-            JSON.stringify({ error: error.message }),
-            {
-                status: 500,
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                }
-            }
-        );
+    const allowedDomains = ['unkn0wn.qzz.io', 'phant0m.qzz.io'];
+    let chosenDomain = reqBody.domain || allowedDomains[Math.floor(Math.random() * allowedDomains.length)];
+    if (!allowedDomains.includes(chosenDomain)) {
+        chosenDomain = 'unkn0wn.qzz.io';
     }
-}
 
-function generateHumanEmail() {
-    const patterns = [
-        // firstname.lastname (most common)
-        () => {
-            const first = randomChoice(firstNames);
-            const last = randomChoice(lastNames);
-            const sep = randomChoice(separators);
-            return `${first}${sep}${last}`;
-        },
-        // firstname.lastname + year
-        () => {
-            const first = randomChoice(firstNames);
-            const last = randomChoice(lastNames);
-            const sep = randomChoice(separators);
-            const year = randomChoice(yearSuffixes);
-            return `${first}${sep}${last}${year}`;
-        },
-        // firstname.lastname + number
-        () => {
-            const first = randomChoice(firstNames);
-            const last = randomChoice(lastNames);
-            const sep = randomChoice(separators);
-            const num = randomChoice(numberSuffixes);
-            return `${first}${sep}${last}${num}`;
-        },
-        // firstname + number
-        () => {
-            const first = randomChoice(firstNames);
-            const num = randomChoice([...yearSuffixes, ...numberSuffixes]);
-            return `${first}${num}`;
-        },
-        // first initial + lastname + number
-        () => {
-            const first = randomChoice(firstNames);
-            const last = randomChoice(lastNames);
-            const num = randomChoice(numberSuffixes);
-            return `${first[0]}${last}${num}`;
-        },
-        // firstname + last initial + number
-        () => {
-            const first = randomChoice(firstNames);
-            const last = randomChoice(lastNames);
-            const num = randomChoice(yearSuffixes);
-            return `${first}${last[0]}${num}`;
-        },
-        // firstname.middle_initial.lastname
-        () => {
-            const first = randomChoice(firstNames);
-            const middle = randomChoice(firstNames)[0];
-            const last = randomChoice(lastNames);
-            return `${first}.${middle}.${last}`;
-        },
-        // the.firstname
-        () => {
-            const first = randomChoice(firstNames);
-            const num = Math.random() > 0.5 ? randomChoice(numberSuffixes) : '';
-            return `the.${first}${num}`;
-        },
-        // firstname.official/real/pro
-        () => {
-            const first = randomChoice(firstNames);
-            const suffix = randomChoice(['real', 'official', 'hq', 'pro', 'vip', 'main']);
-            return `${first}.${suffix}`;
-        },
-        // adjective + noun + number
-        () => {
-            const adj = randomChoice(adjectives);
-            const noun = randomChoice(nouns);
-            const num = randomChoice(numberSuffixes);
-            return `${adj}${noun}${num}`;
-        },
-        // firstname.from.city
-        () => {
-            const first = randomChoice(firstNames);
-            const cities = ['nyc', 'la', 'chi', 'miami', 'london', 'paris', 'tokyo', 'delhi', 'mumbai', 'dubai'];
-            const city = randomChoice(cities);
-            return `${first}.from.${city}`;
-        },
-        // mr/ms firstname
-        () => {
-            const prefix = randomChoice(['mr', 'ms', 'dr', 'prof']);
-            const first = randomChoice(firstNames);
-            const num = Math.random() > 0.6 ? randomChoice(numberSuffixes) : '';
-            return `${prefix}.${first}${num}`;
-        },
-        // firstname + random adjective
-        () => {
-            const first = randomChoice(firstNames);
-            const adj = randomChoice(adjectives);
-            return `${adj}${first}`;
-        },
-        // double firstname
-        () => {
-            const first = randomChoice(firstNames);
-            const second = randomChoice(firstNames);
-            const sep = randomChoice(separators);
-            return `${first}${sep}${second}`;
-        },
-        // firstname + work-related
-        () => {
-            const first = randomChoice(firstNames);
-            const work = randomChoice(['work', 'jobs', 'biz', 'office', 'mail', 'inbox', 'temp', 'personal']);
-            return `${first}.${work}`;
-        }
-    ];
+    // IP Rate Limit check (30 generations / 10 mins)
+    const clientIp = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
+    const ipRateKey = `rate:gen:${clientIp}:${Math.floor(Date.now() / 600000)}`;
+    const genCount = parseInt(await env.INBOX_META.get(ipRateKey) || '0', 10);
+    if (genCount >= 30) {
+        return new Response(JSON.stringify({ error: 'Too many address generations. Please wait a few minutes.' }), {
+            status: 429,
+            headers: { 'Content-Type': 'application/json' }
+        });
+    }
+    await env.INBOX_META.put(ipRateKey, String(genCount + 1), { expirationTtl: 1200 });
 
-    const pattern = randomChoice(patterns);
-    const localPart = pattern().toLowerCase();
+    let localPart = generateRandomLocalPart();
+    let email = `${localPart}@${chosenDomain}`;
+    let addressHash = await sha256Hex(email);
 
-    return `${localPart}@unknownlll2829.qzz.io`;
-}
+    // Dedup check: ensure hash doesn't already exist
+    let attempts = 0;
+    while (await env.INBOX_META.get(`dedup:${addressHash}`) && attempts < 5) {
+        localPart = generateRandomLocalPart();
+        email = `${localPart}@${chosenDomain}`;
+        addressHash = await sha256Hex(email);
+        attempts++;
+    }
 
-function randomChoice(arr) {
-    return arr[Math.floor(Math.random() * arr.length)];
+    // Register SHA-256 dedup hash with 1hr TTL (No plain text address stored!)
+    await env.INBOX_META.put(`dedup:${addressHash}`, '1', { expirationTtl: 3600 });
+
+    // Handle Ed25519 public key if client provided it
+    const clientPublicKey = request.headers.get('x-ed25519-pubkey') || reqBody.publicKey;
+    if (clientPublicKey) {
+        await env.INBOX_META.put(`claim_pubkey:${addressHash}`, clientPublicKey, { expirationTtl: 3600 });
+    }
+
+    // Generate single-use challenge nonce for claim
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+    await env.INBOX_META.put(`claim_nonce:${addressHash}`, nonce, { expirationTtl: 3600 });
+
+    const channel = `private-inbox-${addressHash.slice(0, 32)}`;
+
+    return new Response(JSON.stringify({
+        success: true,
+        email,
+        domain: chosenDomain,
+        addressHash,
+        channel,
+        nonce,
+        expiresIn: 3600,
+        createdAt: new Date().toISOString()
+    }), {
+        headers: { 'Content-Type': 'application/json' }
+    });
 }

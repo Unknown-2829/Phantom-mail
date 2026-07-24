@@ -1,86 +1,93 @@
-/**
- * API Key Management (Premium Feature)
- * GET /api/user/api-key - Get current API key
- * POST /api/user/api-key - Generate new API key
- */
-
-export async function onRequest(context) {
-    const { request, env } = context;
-
-    const token = request.headers.get('Authorization')?.replace('Bearer ', '');
-    if (!token) return jsonResponse({ error: 'Unauthorized' }, 401);
-
-    const session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
-    if (!session || session.expiresAt < Date.now()) return jsonResponse({ error: 'Session expired' }, 401);
-
-    const user = await env.EMAILS.get(session.username, { type: 'json' });
-    if (!user) return jsonResponse({ error: 'User not found' }, 404);
-
-    // Auto-revoke expired premium
-    if (user.isPremium && user.premiumExpiry && user.premiumExpiry < Date.now()) {
-        user.isPremium = false;
-        user.premiumExpiry = null;
-        await env.EMAILS.put(session.username, JSON.stringify(user));
-    }
-
-    switch (request.method) {
-        case 'GET': return handleGet(user, env);
-        case 'POST': return handlePost(user, env, session.username);
-        default: return jsonResponse({ error: 'Method not allowed' }, 405);
-    }
+function generateHex(bytes = 16) {
+    return Array.from(crypto.getRandomValues(new Uint8Array(bytes)))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function handleGet(user, env) {
-    if (!user.apiKey) return jsonResponse({ apiKey: null, message: 'No API key generated' });
-    // Ensure key is synced to API_KEYS for v1 API, and that isPremium is current
-    if (env.API_KEYS) {
-        const existing = await env.API_KEYS.get(user.apiKey, { type: 'json' }).catch(() => null);
-        if (!existing || existing.isPremium !== !!user.isPremium) {
-            await env.API_KEYS.put(user.apiKey, JSON.stringify({
-                userId: user.username || 'unknown',
-                isPremium: !!user.isPremium,
-                createdAt: existing?.createdAt || user.apiKeyCreatedAt || Date.now()
-            })).catch(() => {});
+export async function onRequestGet(context) {
+    const { request, env } = context;
+    const url = new URL(request.url);
+    const userId = url.searchParams.get('userId') || 'anonymous';
+
+    const userStr = await env.EMAILS.get(`user:${userId}`);
+    let plan = 'free';
+    let apiKey = '';
+
+    if (userStr) {
+        try {
+            const u = JSON.parse(userStr);
+            plan = u.plan || 'free';
+            apiKey = u.apiKey || '';
+        } catch (e) {}
+    }
+
+    if (!apiKey) {
+        apiKey = `pm_${plan === 'premium' ? 'pro' : 'free'}_${generateHex()}`;
+        const keyData = { key: apiKey, userId, plan, createdAt: new Date().toISOString() };
+        await env.API_KEYS.put(apiKey, JSON.stringify(keyData));
+
+        // Update user record
+        let userObj = userStr ? JSON.parse(userStr) : { userId, plan };
+        userObj.apiKey = apiKey;
+        await env.EMAILS.put(`user:${userId}`, JSON.stringify(userObj));
+    }
+
+    return new Response(JSON.stringify({
+        success: true,
+        apiKey,
+        plan,
+        prefix: apiKey.substring(0, 10)
+    }), {
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+export async function onRequestPost(context) {
+    const { request, env } = context;
+    let body = {};
+    try { body = await request.json(); } catch (e) {}
+
+    const { userId = 'anonymous' } = body;
+    const userKey = `user:${userId}`;
+    const userStr = await env.EMAILS.get(userKey);
+
+    let userObj = { userId, plan: 'free' };
+    if (userStr) {
+        try { userObj = JSON.parse(userStr); } catch (e) {}
+    }
+
+    const oldKey = userObj.apiKey;
+    const newKey = `pm_${userObj.plan === 'premium' ? 'pro' : 'free'}_${generateHex()}`;
+
+    // 24-hour Rotation Grace Period: Mark old key as deprecated with 24-hour expirationTtl
+    if (oldKey) {
+        const oldDataStr = await env.API_KEYS.get(oldKey);
+        if (oldDataStr) {
+            try {
+                const oldData = JSON.parse(oldDataStr);
+                oldData.deprecated = true;
+                oldData.deprecatedAt = new Date().toISOString();
+                oldData.replacedBy = newKey;
+
+                await env.API_KEYS.put(oldKey, JSON.stringify(oldData), { expirationTtl: 86400 });
+            } catch (e) {
+                await env.API_KEYS.delete(oldKey);
+            }
         }
     }
-    return jsonResponse({ apiKey: user.apiKey, isPremium: user.isPremium, rateLimit: user.isPremium ? 10000 : 100 });
-}
 
-async function handlePost(user, env, username) {
-    const newKey = generateApiKey();
+    // Save new key
+    const newKeyData = { key: newKey, userId, plan: userObj.plan, createdAt: new Date().toISOString() };
+    await env.API_KEYS.put(newKey, JSON.stringify(newKeyData));
 
-    // Remove old key from API_KEYS if it exists
-    if (user.apiKey && env.API_KEYS) {
-        await env.API_KEYS.delete(user.apiKey).catch(() => {});
-    }
+    userObj.apiKey = newKey;
+    await env.EMAILS.put(userKey, JSON.stringify(userObj));
 
-    user.apiKey = newKey;
-    user.apiKeyCreatedAt = Date.now();
-    await env.EMAILS.put(username, JSON.stringify(user));
-
-    // Register key in API_KEYS namespace for v1 API validation
-    if (env.API_KEYS) {
-        await env.API_KEYS.put(newKey, JSON.stringify({
-            userId: username,
-            isPremium: !!user.isPremium,
-            createdAt: Date.now()
-        }));
-    }
-
-    return jsonResponse({ success: true, apiKey: newKey, isPremium: user.isPremium, rateLimit: user.isPremium ? 10000 : 100 });
-}
-
-function generateApiKey() {
-    // Use CSPRNG — 32 random bytes mapped to a URL-safe Base64 string, prefixed with 'pm_'
-    const bytes = crypto.getRandomValues(new Uint8Array(32));
-    const b64 = btoa(String.fromCharCode(...bytes))
-        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    return `pm_${b64}`;
-}
-
-function jsonResponse(data, status = 200) {
-    return new Response(JSON.stringify(data), {
-        status,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+    return new Response(JSON.stringify({
+        success: true,
+        apiKey: newKey,
+        oldKeyDeprecated: oldKey || null,
+        gracePeriodHours: 24
+    }), {
+        headers: { 'Content-Type': 'application/json' }
     });
 }

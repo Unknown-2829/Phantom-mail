@@ -1,22 +1,37 @@
 {
   "name": "Phantom Mail",
-  "short_name": "PhantomMail",
-  "description": "Free disposable temporary email. Invisible. Anonymous.",
+  "short_name": "Phantom",
+  "description": "Privacy-first disposable email service with real-time push and cryptographic security.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a1f",
-  "theme_color": "#00d09c",
+  "background_color": "#07080f",
+  "theme_color": "#00e5b3",
   "icons": [
     {
-      "src": "https://assets.unknowns.app/android-192.png",
+      "src": "https://assets.unknowns.app/logo.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "https://assets.unknowns.app/android-512.png",
+      "src": "https://assets.unknowns.app/logo.png",
       "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Address",
+      "short_name": "Generate",
+      "description": "Generate a new temporary email address",
+      "url": "/?action=generate",
+      "icons": [{ "src": "https://assets.unknowns.app/logo.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Inbox",
+      "short_name": "Inbox",
+      "description": "Open your active temporary inbox",
+      "url": "/?action=inbox",
+      "icons": [{ "src": "https://assets.unknowns.app/logo.png", "sizes": "192x192" }]
     }
   ]
 }

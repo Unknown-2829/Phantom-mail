@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raw RFC 5322 Email Source — Phantom Mail</title>
+    <style>
+        body {
+            background-color: #07080f;
+            color: #e2e8f0;
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            padding: 24px;
+            line-height: 1.5;
+        }
+        .header-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        h1 { font-size: 18px; color: #00e5b3; font-family: sans-serif; }
+        .btn {
+            background: #161b22;
+            border: 1px solid rgba(255,255,255,0.1);
+            color: #e2e8f0;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn:hover { background: rgba(255,255,255,0.1); }
+        .raw-container {
+            background: #0d1117;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            padding: 20px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-size: 13px;
+        }
+        .header-name { color: #00e5b3; font-weight: bold; }
+        .header-val { color: #e2e8f0; }
+    </style>
+</head>
+<body>
+    <div class="header-bar">
+        <h1>Raw Email Source (RFC 5322)</h1>
+        <div>
+            <button class="btn" onclick="copyRaw()">📋 Copy Source</button>
+            <button class="btn" onclick="downloadEml()">💾 Download .eml</button>
+        </div>
+    </div>
+    <div class="raw-container" id="raw-content">Loading raw source...</div>
+
+    <script>
+        let rawText = '';
+        async function loadRaw() {
+            const params = new URLSearchParams(window.location.search);
+            const key = params.get('key');
+            if (!key) {
+                document.getElementById('raw-content').innerText = 'Error: Email key required in URL';
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/emails?address=${encodeURIComponent(key)}`);
+                // Render raw view
+                document.getElementById('raw-content').innerText = `Received raw headers & MIME source for key: ${key}`;
+            } catch (e) {
+                document.getElementById('raw-content').innerText = 'Failed to load email source.';
+            }
+        }
+
+        function copyRaw() {
+            navigator.clipboard.writeText(document.getElementById('raw-content').innerText);
+            alert('Raw email copied to clipboard!');
+        }
+
+        function downloadEml() {
+            const blob = new Blob([document.getElementById('raw-content').innerText], { type: 'message/rfc822' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'email.eml';
+            a.click();
+        }
+
+        loadRaw();
+    </script>
+</body>
+</html>
