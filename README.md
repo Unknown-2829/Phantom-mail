@@ -69,9 +69,9 @@ Or follow the [detailed setup guide](#cloudflare-setup-guide) below.
 ## 📸 Screenshots
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/Unknown-2829/Phantom-mail/screenshots/inbox.png" width="32%" />
-  <img src="https://raw.githubusercontent.com/Unknown-2829/Phantom-mail/screenshots/email-view.png" width="32%" />
-  <img src="https://raw.githubusercontent.com/Unknown-2829/Phantom-mail/screenshots/premium.png" width="32%" />
+  <img src="https://assets.unknowns.app/inbox.png" width="32%" />
+  <img src="https://assets.unknowns.app/email-view.png" width="32%" />
+  <img src="https://assets.unknowns.app/premium.png" width="32%" />
 </div>
 
 ---
