@@ -1,4 +1,4 @@
-name = "phantom-mail-email-v2"
+name = "phantom-mail-backend"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
@@ -11,6 +11,12 @@ FREE_INBOX_CAP = "10"
 PREMIUM_INBOX_CAP = "30"
 FREE_MAIL_TTL_SEC = "3600"
 GLOBAL_MAIL_TTL_SEC = "1296000" # 15 days
+
+# Pusher Real-Time Credentials
+PUSHER_APP_ID = "2179546"
+PUSHER_KEY = "c52890db708136e8b408"
+PUSHER_SECRET = "59fb5f9bc593d0fc9153"
+PUSHER_CLUSTER = "ap2"
 
 [[kv_namespaces]]
 binding = "EMAILS"
