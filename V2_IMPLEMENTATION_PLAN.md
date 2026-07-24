@@ -14,6 +14,7 @@
 | Feature | Free Tier | Premium Tier ($4/mo or $25/yr) | Self-Hosted / Managed Instance |
 | :--- | :--- | :--- | :--- |
 | **Address Retention** | 1 hour TTL | 15 days TTL | 15 days (configurable) |
+| **Data Cleanup Policy** | Immediate backend purge on delete/gen (unless saved) | Retained for saved slots (15 days TTL) | Configurable |
 | **Saved / Favourite Slots** | Exactly 1 address | Up to 15 addresses | Up to 15 addresses per user |
 | **Inbox Cap per Address** | 10 emails (auto-deletes oldest) | 30 inbox + 15 starred = 45 total | 30 inbox + 15 starred |
 | **Global Storage TTL** | 15 days max (all incoming mail) | 15 days max | Configurable |
