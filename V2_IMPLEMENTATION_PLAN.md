@@ -5,7 +5,7 @@
 **Phantom Mail v2.0** is a full-stack, enterprise-grade, privacy-first temporary and disposable email platform built on Cloudflare serverless infrastructure (Workers, Pages, KV, R2, Durable Objects). 
 
 - **Current Version Rating**: 5.5 / 10 (Polling-based, single-domain, basic security, minimal admin, device-only state)
-- **Target Upgrade Rating**: 9.5 / 10 (WebSocket/Pusher real-time, Ed25519 cryptographic address claims, zero address history storage via SHA-256 dedup, PWA with VAPID push notifications, dual-domain identity, isolated admin worker with TOTP & analytics, dual-branch architecture for SaaS and Self-Hosted).
+- **Target Upgrade Rating**: 9.5 / 10 (WebSocket/Pusher real-time, Ed25519 cryptographic address claims, zero address history storage via SHA-256 dedup, PWA with VAPID push notifications, **extensible multi-domain identity** (`@unkn0wn.qzz.io` + `@phant0m.qzz.io` — free users get random domain, premium users choose), isolated admin worker with TOTP & analytics, dual-branch architecture for SaaS and Self-Hosted).
 
 ---
 
@@ -23,7 +23,7 @@
 | **API Receive Limit** | 10 emails / day | 500 emails / day | Configurable |
 | **API Send Limit** | ❌ Blocked | 50 sends / day | 50 sends / day |
 | **Hidden Inbound Limit** | 50 emails / hr / IP | 1,000 emails / day | Configurable |
-| **Domains Available** | Random or `@unkn0wn.qzz.io` / `@phant0m.qzz.io` | Custom handles + choice | Custom self-hosted domain |
+| **Domain Assignment** | Random address, domain randomly assigned from `@unkn0wn.qzz.io` OR `@phant0m.qzz.io` | Can choose preferred domain (`@unkn0wn` or `@phant0m`) + custom handle | Custom self-hosted domain (extensible for v3+) |
 | **Real-time Delivery** | Pusher WS + ETag Polling Fallback | Pusher WS + ETag Polling | Pusher WS / DO WS |
 | **PWA & Web Push** | Supported | Supported | Supported |
 | **Forwarding & QR** | QR code only | Auto-Forwarding + QR | Auto-Forwarding + QR |
@@ -56,6 +56,26 @@
 
 ---
 
+## 2.5 Multi-Domain Architecture
+
+### Active Mail Domains (V2.0)
+| Domain | Purpose | Who Gets It |
+| :--- | :--- | :--- |
+| `@unkn0wn.qzz.io` | Primary mail domain | Free (random) + Premium (can choose) |
+| `@phant0m.qzz.io` | Secondary mail domain | Free (random) + Premium (can choose) |
+
+### Domain Assignment Rules:
+- **Free / Logged-Out Users**: Server randomly picks either `@unkn0wn.qzz.io` or `@phant0m.qzz.io` at generation time. No user choice.
+- **Logged-In Free Users**: Same random assignment. No manual choice.
+- **Premium Users**: Can select which domain they want before generating. Default is random.
+- **KV Key Prefixes**: Keys are namespaced by domain prefix to avoid collisions:
+  - `email:unkn0wn:{addressHash}:{timestamp}:{id}` for `@unkn0wn.qzz.io` emails.
+  - `email:phant0m:{addressHash}:{timestamp}:{id}` for `@phant0m.qzz.io` emails.
+- **Cloudflare Email Routing**: Both domains have catch-all rules pointing to `phantom-mail-backend`.
+- **Future Extensibility (V3 Self-Hosted)**: The domain list is config-driven (`DOMAIN_LIST` env var, comma-separated). Additional domains can be added on the self-hosted branch without code changes.
+
+---
+
 ## 3. Detailed Component Architecture
 
 ```
@@ -69,7 +89,7 @@
        │
        ├─► [ Cloudflare Email Worker: Inbound Mail Ingestion ]
        │         │
-       │         ├─► Enforces Dual-Domain Routing (@unkn0wn.qzz.io / @phant0m.qzz.io)
+       │         ├─► Multi-Domain Routing: accepts @unkn0wn.qzz.io + @phant0m.qzz.io (extensible via config)
        │         ├─► MIME Parsing, Charset Decoding, TNEF/ICS/Encrypted Detection
        │         ├─► Lazy Inbox Cap Enforcement & 15-day TTL Injection
        │         └─► Triggers Real-Time Push (Pusher & Web Push)
