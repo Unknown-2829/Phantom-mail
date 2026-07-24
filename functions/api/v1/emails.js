@@ -46,12 +46,13 @@ export async function onRequestGet(context) {
             return jsonResponse({ error: 'Invalid email address format' }, 400);
         }
 
-        if (!env.TEMP_EMAILS) {
+        const tempKV = env.TEMP_EMAILS || env.INBOX_META || env.EMAILS;
+        if (!tempKV) {
             return jsonResponse({ error: 'Service unavailable' }, 503);
         }
 
         // Verify email exists
-        const emailExists = await env.TEMP_EMAILS.get(address);
+        const emailExists = await tempKV.get(address);
         if (!emailExists) {
             return jsonResponse({ error: 'Email not found or expired' }, 404);
         }

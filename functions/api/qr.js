@@ -19,14 +19,15 @@ export async function onRequestGet(context) {
     const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const rateLimitKey = `ratelimit:qr:${ip}:${date}`;
 
-    const countStr = await env.TEMP_EMAILS.get(rateLimitKey);
+    const tempKV = env.TEMP_EMAILS || env.INBOX_META || env.EMAILS;
+    const countStr = await tempKV.get(rateLimitKey);
     const count = countStr ? parseInt(countStr, 10) : 0;
 
     if (count >= QR_DAILY_LIMIT) {
         return jsonResponse({ error: 'Rate limit exceeded. Max 30 QR requests per day.' }, 429);
     }
 
-    await env.TEMP_EMAILS.put(rateLimitKey, String(count + 1), { expirationTtl: 86400 });
+    await tempKV.put(rateLimitKey, String(count + 1), { expirationTtl: 86400 });
 
     try {
         const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(email)}&margin=10`;

@@ -13,7 +13,7 @@ const originalTitle = document.title;
 const SIGN_IN_BTN_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="flex-shrink:0"><title>Account icon</title><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg> Sign In';
 
 // Domain used for permanent / custom email addresses
-const PERM_EMAIL_DOMAIN = '@unknownlll2829.qzz.io';
+const PERM_EMAIL_DOMAIN = '@unkn0wn.qzz.io';
 // Allowed characters for permanent email usernames
 const PERM_USERNAME_RE = /^[a-z0-9._-]+$/;
 

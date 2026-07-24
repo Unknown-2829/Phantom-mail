@@ -110,9 +110,10 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'from, to, subject, body are required' }, 400);
   }
 
-  // Only allow sending FROM our domain — prevents spoofing
-  if (!from.endsWith('@unknownlll2829.qzz.io')) {
-    return jsonResponse({ error: 'You can only send from @unknownlll2829.qzz.io addresses' }, 403);
+  const allowedDomains = ['unkn0wn.qzz.io', 'phant0m.qzz.io'];
+  const fromDomain = from.split('@')[1]?.toLowerCase();
+  if (!allowedDomains.includes(fromDomain)) {
+    return jsonResponse({ error: 'You can only send from @unkn0wn.qzz.io or @phant0m.qzz.io addresses' }, 403);
   }
 
   // Validate attachments

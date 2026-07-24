@@ -58,6 +58,7 @@ const numberSuffixes = ['1', '2', '3', '4', '5', '7', '8', '9', '11', '12', '21'
 export async function onRequestPost(context) {
     try {
         const { env, request } = context;
+        const tempKV = env.TEMP_EMAILS || env.INBOX_META || env.EMAILS;
 
         // Check for a valid session token (authenticated users get unlimited generations)
         const authHeader = request.headers.get('Authorization') || '';
@@ -90,7 +91,7 @@ export async function onRequestPost(context) {
 
         do {
             email = generateHumanEmail();
-            const exists = await env.TEMP_EMAILS.get(email);
+            const exists = await tempKV.get(email);
             if (!exists) break;
             attempts++;
         } while (attempts < maxAttempts);
@@ -107,7 +108,7 @@ export async function onRequestPost(context) {
             expiresAt: Date.now() + 3600000,
         };
 
-        await env.TEMP_EMAILS.put(
+        await tempKV.put(
             email,
             JSON.stringify(emailData),
             { expirationTtl: 3600 }
@@ -246,7 +247,7 @@ function generateHumanEmail() {
     const pattern = randomChoice(patterns);
     const localPart = pattern().toLowerCase();
 
-    return `${localPart}@unknownlll2829.qzz.io`;
+    return `${localPart}@unkn0wn.qzz.io`;
 }
 
 function randomChoice(arr) {

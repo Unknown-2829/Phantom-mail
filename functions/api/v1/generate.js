@@ -47,7 +47,8 @@ export async function onRequestPost(context) {
         return jsonResponse({ error: 'Rate limit exceeded', limit, used: usage }, 429);
     }
 
-    if (!env.TEMP_EMAILS) {
+    const tempKV = env.TEMP_EMAILS || env.INBOX_META || env.EMAILS;
+    if (!tempKV) {
         return jsonResponse({ error: 'Service unavailable' }, 503);
     }
 
@@ -71,10 +72,10 @@ export async function onRequestPost(context) {
                 return jsonResponse({ error: 'Username must be 3-30 characters' }, 400);
             }
 
-            email = `${username}@unknownlll2829.qzz.io`;
+            email = `${username}@unkn0wn.qzz.io`;
 
             // Check if exists
-            const exists = await env.TEMP_EMAILS.get(email);
+            const exists = await tempKV.get(email);
             if (exists) {
                 return jsonResponse({ error: 'Username already taken' }, 400);
             }
@@ -84,14 +85,14 @@ export async function onRequestPost(context) {
 
             // Ensure unique
             let attempts = 0;
-            while (await env.TEMP_EMAILS.get(email) && attempts < 5) {
+            while (await tempKV.get(email) && attempts < 5) {
                 email = generateRandomEmail();
                 attempts++;
             }
         }
 
         // Store email
-        await env.TEMP_EMAILS.put(email, JSON.stringify({
+        await tempKV.put(email, JSON.stringify({
             createdAt: Date.now(),
             apiGenerated: true,
             apiKey: apiKey.substring(0, 8) + '...'
