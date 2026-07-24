@@ -6,8 +6,6 @@ compatibility_date = "2024-01-01"
 MODE = "hosted"
 RESEND_QUOTA_LIMIT = "3000"
 ADMIN_REPORT_EMAIL = "admin@mail.unknowns.app"
-RESEND_API_KEY = "re_YOUR_KEY_HERE"
-ADMIN_PASSWORD = "PhantomAdmin2026!"
 
 [[kv_namespaces]]
 binding = "EMAILS"
