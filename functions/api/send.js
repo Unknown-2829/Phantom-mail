@@ -1,13 +1,9 @@
 /**
- * CLOUDFLARE SETUP REQUIRED:
+ * POST /api/send — Outbound Email via Resend API
  *
- * 1. Sign up at resend.com
- * 2. Add domain: unknownlll2829.qzz.io
- * 3. Add DNS records Resend gives you in Cloudflare DNS
- * 4. Get API key from Resend dashboard
- * 5. In Cloudflare Pages → Settings → Environment Variables:
- *    Add secret: RESEND_API_KEY = re_xxxxxxxxxx
- * 6. Redeploy Pages project
+ * Supported from domains: @unkn0wn.qzz.io, @phant0m.qzz.io
+ * Rate limits: Free = 3/day | Premium = 25/day
+ * Required env: RESEND_API_KEY (secret), RESEND_QUOTA_LIMIT (plain, default 3000)
  */
 
 /**
@@ -42,7 +38,7 @@ export async function onRequestGet(context) {
     ? `send_rate:user:${username}`
     : address ? `send_rate:addr:${address}` : null;
 
-  const dailyLimit = isPremium ? 50 : 3;
+  const dailyLimit = isPremium ? 25 : 3; // Free: 3/day | Premium: 25/day
   let used = 0;
 
   if (rateLimitKey) {
@@ -172,7 +168,15 @@ export async function onRequestPost(context) {
   const rateLimitKey = username
     ? `send_rate:user:${username}`
     : `send_rate:addr:${from}`;
-  const dailyLimit = isPremium ? 50 : 3;
+  const dailyLimit = isPremium ? 25 : 3; // Free: 3/day | Premium: 25/day
+
+  // ── Resend global quota guard ─────────────────────────────────
+  const resendQuotaLimit = parseInt(env.RESEND_QUOTA_LIMIT || '3000', 10);
+  const resendToday = new Date().toISOString().slice(0, 10);
+  const resendUsed  = parseInt((await env.INBOX_META?.get(`analytics:emails_sent:${resendToday}`)) || '0', 10);
+  if (resendUsed >= resendQuotaLimit) {
+    return jsonResponse({ error: 'Email sending quota reached for today. Try again tomorrow.' }, 429);
+  }
 
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   let rateData = await env.EMAILS.get(rateLimitKey, { type: 'json' }) || { date: today, count: 0 };
@@ -292,11 +296,18 @@ export async function onRequestPost(context) {
     expirationTtl: 15 * 24 * 3600
   });
 
-  // ── Update rate limit ─────────────────────────────────────────
+  // ── Update rate limit + Resend analytics ─────────────────────
   rateData.count += 1;
   await env.EMAILS.put(rateLimitKey, JSON.stringify(rateData), {
     expirationTtl: 2 * 24 * 3600
   });
+
+  // Track outbound send in analytics for admin dashboard & quota guard
+  if (env.INBOX_META) {
+    const analyticsKey = `analytics:emails_sent:${new Date().toISOString().slice(0, 10)}`;
+    const cur = parseInt((await env.INBOX_META.get(analyticsKey)) || '0', 10);
+    await env.INBOX_META.put(analyticsKey, String(cur + 1), { expirationTtl: 400 * 86400 });
+  }
 
   return jsonResponse({
     success: true,
