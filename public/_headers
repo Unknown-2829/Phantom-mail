@@ -1,30 +1,16 @@
-/*
-  ┌────────────────────────────────────────────────────────────────────────────┐
-  │  Phantom Mail — Security Headers                                            │
-  │  Applied to ALL routes via Cloudflare Pages _headers file                   │
-  │                                                                             │
-  │  CSP connect-src covers:                                                    │
-  │    - unkn0wn.qzz.io / phant0m.qzz.io  (our APIs)                          │
-  │    - track.unkn0wn.qzz.io             (open pixel + click redirect)        │
-  │    - Pusher (ap2 cluster, ws + http)                                        │
-  │    - Cloudflare Insights                                                    │
-  │    - NOWPayments                                                            │
-  │    - Resend (API only — called server-side, but frontend may check status)  │
-  └────────────────────────────────────────────────────────────────────────────┘
-*/
+# Phantom Mail — Cloudflare Pages Security Headers
+# Note: Cloudflare Pages _headers comments MUST start with # (not /* */)
 
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' https://js.pusher.com https://static.cloudflareinsights.com; script-src-attr 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src * data: blob: https://track.unkn0wn.qzz.io; connect-src 'self' https://unkn0wn.qzz.io https://phant0m.qzz.io https://track.unkn0wn.qzz.io https://api.pusher.com https://sockjs-ap2.pusher.com https://api-ap2.pusher.com wss://ws-ap2.pusher.com wss://*.pusher.com https://api.nowpayments.io https://beacon.cloudflareinsights.com; frame-src 'none'; object-src 'none'; worker-src blob: 'self'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://js.pusher.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src * data: blob: https://track.unkn0wn.qzz.io; connect-src 'self' https://mail.unknowns.app https://*.unknowns.app https://unkn0wn.qzz.io https://phant0m.qzz.io https://*.qzz.io https://track.unkn0wn.qzz.io https://api.pusher.com https://sockjs-ap2.pusher.com https://api-ap2.pusher.com wss://ws-ap2.pusher.com wss://*.pusher.com https://api.nowpayments.io https://beacon.cloudflareinsights.com; frame-src 'self' blob:; object-src 'none'; worker-src blob: 'self'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
-  X-Frame-Options: DENY
+  X-Frame-Options: SAMEORIGIN
   X-XSS-Protection: 1; mode=block
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
-  Cross-Origin-Opener-Policy: same-origin
-  Cross-Origin-Resource-Policy: same-site
-  Cross-Origin-Embedder-Policy: credentialless
-  X-DNS-Prefetch-Control: off
+  Cross-Origin-Opener-Policy: same-origin-allow-popups
+  Cross-Origin-Resource-Policy: cross-origin
 
 /api/*
   Cache-Control: no-store, no-cache, must-revalidate
