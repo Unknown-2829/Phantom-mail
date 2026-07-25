@@ -2,7 +2,10 @@
  * User Profile
  * GET    /api/user/profile  - Returns username and current premium status
  * PATCH  /api/user/profile  - Change password (body: { oldPassword, newPassword })
- * DELETE /api/user/profile  - Delete account   (body: { password })
+ *                           - Add recovery email (body: { addEmail, emailOtp, otpToken })
+ * DELETE /api/user/profile  - Delete account + purge all data (body: { password })
+ *
+ * Phase 2: removed Google OAuth, updated reserved email domains, full data purge on delete.
  */
 
 export async function onRequestOptions() {
@@ -39,21 +42,17 @@ export async function onRequestGet(context) {
 
     const username = user.displayUsername || (session.username.replace(/^user:/, ''));
 
-    const userKey = session.username;
-    const googleEmail = Array.isArray(user.authProviders) && user.authProviders.includes('google') && userKey.includes('@')
-        ? userKey.replace(/^user:/, '')
-        : null;
-
     return jsonResponse({
         username,
         isPremium,
         premiumExpiry: user.premiumExpiry || null,
         photoURL: user.photoURL || null,
-        authProviders: user.authProviders || (user.passwordHash ? ['password'] : []),
-        hasEmail: !!(user.email || googleEmail),
-        emailVerified: !!(user.emailVerified || googleEmail),
-        maskedEmail: user.email ? maskEmail(user.email) : (googleEmail ? maskEmail(googleEmail) : null),
-        googleEmail: googleEmail ? maskEmail(googleEmail) : null
+        authProviders: user.authProviders || ['password'],
+        hasEmail: !!user.email,
+        emailVerified: !!user.emailVerified,
+        maskedEmail: user.email ? maskEmail(user.email) : null,
+        plan: user.plan || 'free',
+        apiKey: user.apiKey || null
     });
 }
 
@@ -145,22 +144,9 @@ export async function onRequestPatch(context) {
     const newHash = await hashPassword(newPassword, newSalt);
     user.passwordHash = newHash;
     user.salt = newSalt;
-    // Add 'password' to authProviders if not already present
     if (!user.authProviders) user.authProviders = [];
     if (!user.authProviders.includes('password')) user.authProviders.push('password');
     await env.EMAILS.put(session.username, JSON.stringify(user));
-
-    // For Google users: create username pointer so they can sign in by display name
-    if (isGoogle && user.displayUsername) {
-        const aliasNorm = user.displayUsername.trim().toLowerCase().replace(/\s+/g, '_');
-        const aliasKey = `user_ptr:${aliasNorm}`;
-        const existing = await env.EMAILS.get(`user:${aliasNorm}`);
-        const existingPtr = await env.EMAILS.get(aliasKey);
-        if (!existing && !existingPtr) {
-            await env.EMAILS.put(aliasKey, session.username);
-        }
-    }
-
     return jsonResponse({ success: true });
 }
 
@@ -179,26 +165,53 @@ export async function onRequestDelete(context) {
     let body;
     try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid request body' }, 400); }
 
-    const { password, googleDelete } = body;
+    const { password } = body;
 
-    // Google-only users (no passwordHash) can delete without password
-    const isGoogleOnly = Array.isArray(user.authProviders)
-        ? user.authProviders.includes('google') && !user.authProviders.includes('password')
-        : !user.passwordHash;
+    if (!password) return jsonResponse({ error: 'Password is required to delete your account' }, 400);
+    const hash = await hashPassword(password, user.salt);
+    if (hash !== user.passwordHash) return jsonResponse({ error: 'Incorrect password' }, 401);
 
-    if (!isGoogleOnly && !googleDelete) {
-        if (!password) return jsonResponse({ error: 'Password is required to delete your account' }, 400);
-        const hash = await hashPassword(password, user.salt);
-        if (hash !== user.passwordHash) return jsonResponse({ error: 'Incorrect password' }, 401);
+    // Purge all saved addresses: emails from KV + R2 attachments + INBOX_META
+    const savedAddresses = user.savedAddresses || user.savedEmails || [];
+    const sha256Hex = async (str) => {
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+        return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+    };
+    const domainKey = (d) => d === 'unkn0wn.qzz.io' ? 'unkn0wn' : d === 'phant0m.qzz.io' ? 'phant0m' : d.split('.')[0];
+
+    for (const saved of savedAddresses) {
+        try {
+            const addr = saved.address || saved;
+            const addrHash = await sha256Hex(addr);
+            const domain = addr.split('@')[1] || '';
+            const dKey = domainKey(domain);
+            const prefix = `email:${dKey}:${addrHash}:`;
+            const list = await env.EMAILS.list({ prefix });
+            for (const k of list.keys) {
+                const raw = await env.EMAILS.get(k.name);
+                if (raw && env.ATTACHMENTS) {
+                    try {
+                        const mail = JSON.parse(raw);
+                        for (const att of (mail.attachments || [])) {
+                            if (att.key) await env.ATTACHMENTS.delete(att.key).catch(() => {});
+                        }
+                    } catch (_) {}
+                }
+                await env.EMAILS.delete(k.name).catch(() => {});
+            }
+            await env.INBOX_META?.delete(`meta:${addrHash}`).catch(() => {});
+            await env.INBOX_META?.delete(`dedup:${addrHash}`).catch(() => {});
+        } catch (_) {}
     }
 
-    // Delete user record, current session, and all standalone email address records
-    const savedEmails = user.savedEmails || [];
-    await Promise.all([
-      env.EMAILS.delete(session.username),
-      env.EMAILS.delete(`session:${token}`),
-      ...savedEmails.map(e => env.EMAILS.delete(e.address))
-    ]);
+    // Delete API key from API_KEYS namespace
+    if (user.apiKey && env.API_KEYS) {
+        await env.API_KEYS.delete(user.apiKey).catch(() => {});
+    }
+
+    // Delete user record + session
+    await env.EMAILS.delete(session.username);
+    await env.EMAILS.delete(`session:${token}`);
 
     return jsonResponse({ success: true });
 }
@@ -229,8 +242,7 @@ function constantTimeEqual(a, b) {
 
 function isReservedEmail(email) {
     const lower = email.toLowerCase();
-    return ['noreply@unknownlll2829.qzz.io', 'phantom-mail@unknownlll2829.qzz.io'].includes(lower)
-        || lower.endsWith('@unknownlll2829.qzz.io');
+    return lower.endsWith('@unkn0wn.qzz.io') || lower.endsWith('@phant0m.qzz.io');
 }
 
 function maskEmail(email) {

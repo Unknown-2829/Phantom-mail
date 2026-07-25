@@ -2,6 +2,12 @@
  * Signup - Username/Password Auth
  * POST /api/auth/signup
  * Body: { username, password, email?, emailOtp?, otpToken? }
+ *
+ * Phase 2 changes:
+ *   - Reserved email domains updated to new domains
+ *   - Password strength: min 8 chars + at least 1 number or symbol
+ *   - Auto-generates pm_free_* API key on signup, stored in API_KEYS namespace
+ *   - No Google OAuth (removed)
  */
 
 export async function onRequestPost(context) {
@@ -27,9 +33,12 @@ export async function onRequestPost(context) {
         const normalised = username.trim().toLowerCase().replace(/\s+/g, '_');
         const displayUsername = username.trim(); // keeps original casing/spaces for display
 
-        // Validate password
+        // Validate password — min 8 chars + at least 1 number or symbol
         if (!password || password.length < 8) {
             return jsonResponse({ error: 'Password must be at least 8 characters' }, 400);
+        }
+        if (!/[0-9!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?`~]/.test(password)) {
+            return jsonResponse({ error: 'Password must contain at least 1 number or symbol' }, 400);
         }
 
         const userKey = `user:${normalised}`;
@@ -80,6 +89,9 @@ export async function onRequestPost(context) {
         const salt = crypto.randomUUID().replace(/-/g, '');
         const passwordHash = await hashPassword(password, salt);
 
+        // Generate pm_free_ API key automatically on signup
+        const apiKey = generateApiKey('free');
+
         // Create user
         const user = {
             username: userKey,
@@ -91,12 +103,27 @@ export async function onRequestPost(context) {
             createdAt: Date.now(),
             isPremium: false,
             premiumExpiry: null,
-            savedEmails: [],
-            apiKey: null,
-            authProviders: ['password']
+            savedAddresses: [], // renamed from savedEmails — holds address objects
+            apiKey,
+            apiKeyCreatedAt: Date.now(),
+            authProviders: ['password'],
+            banned: false,
+            plan: 'free'
         };
 
         await env.EMAILS.put(userKey, JSON.stringify(user));
+
+        // Register API key in API_KEYS namespace immediately
+        if (env.API_KEYS) {
+            await env.API_KEYS.put(apiKey, JSON.stringify({
+                key: apiKey,
+                userId: userKey,
+                plan: 'free',
+                createdAt: Date.now(),
+                usedToday: 0,
+                lastUsed: null
+            }));
+        }
 
         // Create session
         const token = generateToken();
@@ -109,7 +136,7 @@ export async function onRequestPost(context) {
             expirationTtl: 7 * 24 * 60 * 60
         });
 
-        return jsonResponse({ success: true, token, username: displayUsername, isPremium: false });
+        return jsonResponse({ success: true, token, username: displayUsername, isPremium: false, apiKey });
 
     } catch (error) {
         console.error('Signup error:', error);
@@ -119,8 +146,8 @@ export async function onRequestPost(context) {
 
 function isReservedEmail(e) {
     const lower = e.toLowerCase();
-    return ['noreply@unknownlll2829.qzz.io', 'phantom-mail@unknownlll2829.qzz.io'].includes(lower)
-        || lower.endsWith('@unknownlll2829.qzz.io');
+    return lower.endsWith('@unkn0wn.qzz.io')
+        || lower.endsWith('@phant0m.qzz.io');
 }
 
 async function hashPassword(password, salt) {
@@ -143,6 +170,12 @@ async function hashPassword(password, salt) {
 function generateToken() {
     return Array.from(crypto.getRandomValues(new Uint8Array(48)))
         .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function generateApiKey(plan = 'free') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    return `pm_${plan}_${hex}`;
 }
 
 function constantTimeEqual(a, b) {

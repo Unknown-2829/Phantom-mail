@@ -1,9 +1,35 @@
 /**
- * Saved Emails Management (Premium Feature)
- * GET    /api/user/saved-emails - Get saved emails list
- * POST   /api/user/saved-emails - Save an email (max 8)
- * DELETE /api/user/saved-emails - Remove saved email
+ * Saved Addresses Management
+ * GET    /api/user/saved-emails → list saved addresses
+ * POST   /api/user/saved-emails → save a new address (Free: max 1 | Premium: max 15)
+ * DELETE /api/user/saved-emails → remove saved address (purges emails + R2 + metadata)
+ *
+ * Phase 2 changes:
+ *   - Free: max 1 saved address (strictly enforced)
+ *   - Premium: max 15 saved addresses
+ *   - Uses domain-prefixed SHA-256 KV prefix (matches Phase 1 email-handler)
+ *   - On save: marks address as isSaved=true in INBOX_META so backend respects 15-day TTL
+ *   - On delete: purges all emails + R2 attachments + INBOX_META entry immediately
  */
+
+const FREE_MAX_SAVED    = 1;
+const PREMIUM_MAX_SAVED = 15;
+
+// Shared SHA-256 helper (matches backend worker)
+async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(str.toLowerCase().trim())
+    );
+    return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function domainKey(domain) {
+    if (domain === 'unkn0wn.qzz.io') return 'unkn0wn';
+    if (domain === 'phant0m.qzz.io') return 'phant0m';
+    return domain.split('.')[0];
+}
 
 export async function onRequest(context) {
     const { request, env } = context;
@@ -22,72 +48,113 @@ export async function onRequest(context) {
     if (isPremium && user.premiumExpiry && user.premiumExpiry < Date.now()) {
         user.isPremium = false;
         user.premiumExpiry = null;
-        await env.EMAILS.put(session.username, JSON.stringify(user));
         isPremium = false;
+        await env.EMAILS.put(session.username, JSON.stringify(user));
     }
 
-    if (!isPremium) return jsonResponse({ error: 'Premium required' }, 403);
+    const maxSaved = isPremium ? PREMIUM_MAX_SAVED : FREE_MAX_SAVED;
 
     switch (request.method) {
-        case 'GET': return handleGet(user, env);
-        case 'POST': return handlePost(request, user, env, session.username);
+        case 'GET':    return handleGet(user, env);
+        case 'POST':   return handlePost(request, user, env, session.username, isPremium, maxSaved);
         case 'DELETE': return handleDelete(request, user, env, session.username);
-        default: return jsonResponse({ error: 'Method not allowed' }, 405);
+        default:       return jsonResponse({ error: 'Method not allowed' }, 405);
     }
 }
 
 async function handleGet(user, env) {
-    const savedEmails = user.savedEmails || [];
-    const emailsData = await Promise.all(
-        savedEmails.map(async (savedEmail) => {
-            const emails = [];
-            const list = await env.EMAILS.list({ prefix: `email:${savedEmail.address}:` });
-            for (const key of list.keys) {
-                const emailData = await env.EMAILS.get(key.name, { type: 'json' });
-                if (emailData) emails.push(emailData);
-            }
-            return { ...savedEmail, emails: emails.sort((a, b) => b.timestamp - a.timestamp) };
-        })
-    );
-    return jsonResponse({ savedEmails: emailsData });
+    const savedAddresses = user.savedAddresses || user.savedEmails || [];
+    return jsonResponse({
+        savedAddresses,
+        count: savedAddresses.length,
+        maxAllowed: user.isPremium ? PREMIUM_MAX_SAVED : FREE_MAX_SAVED
+    });
 }
 
-async function handlePost(request, user, env, username) {
-    const { address, customName } = await request.json();
+async function handlePost(request, user, env, username, isPremium, maxSaved) {
+    const { address, customName, starred = false } = await request.json();
     if (!address || !address.includes('@')) return jsonResponse({ error: 'Invalid email address' }, 400);
 
-    const savedEmails = user.savedEmails || [];
-    if (savedEmails.length >= 8) return jsonResponse({ error: 'Maximum 8 saved emails allowed' }, 400);
-    if (savedEmails.some(e => e.address === address)) return jsonResponse({ error: 'Email already saved' }, 400);
+    const normalized = address.toLowerCase().trim();
+    const savedAddresses = user.savedAddresses || user.savedEmails || [];
 
-    // Check if this address is already reserved by any other premium user
-    const existing = await env.EMAILS.get(address, { type: 'json' });
-    if (existing && existing.isPermanent) return jsonResponse({ error: 'This email address is already taken by another user' }, 409);
+    // Enforce cap
+    if (savedAddresses.length >= maxSaved) {
+        return jsonResponse({
+            error: isPremium
+                ? `Maximum ${PREMIUM_MAX_SAVED} saved addresses allowed (Premium limit)`
+                : `Free users can save 1 address only. Upgrade to Premium for up to ${PREMIUM_MAX_SAVED}.`
+        }, 400);
+    }
 
-    savedEmails.push({ address, customName: customName || address.split('@')[0], savedAt: Date.now(), forwarding: null });
-    user.savedEmails = savedEmails;
+    if (savedAddresses.some(e => e.address === normalized)) {
+        return jsonResponse({ error: 'Address already saved' }, 400);
+    }
+
+    // Mark address as saved in INBOX_META so email-handler respects 15-day TTL
+    const addrHash = await sha256Hex(normalized);
+    const metaStr  = await env.INBOX_META.get(`meta:${addrHash}`);
+    let meta = {};
+    try { meta = JSON.parse(metaStr || '{}'); } catch (_) {}
+    meta.isSaved   = true;
+    meta.isPremium = isPremium;
+    meta.savedAt   = Date.now();
+    await env.INBOX_META.put(`meta:${addrHash}`, JSON.stringify(meta));
+
+    savedAddresses.push({
+        address: normalized,
+        customName: customName || normalized.split('@')[0],
+        domain: normalized.split('@')[1],
+        starred: !!starred,
+        savedAt: Date.now(),
+        forwarding: null
+    });
+
+    user.savedAddresses = savedAddresses;
+    delete user.savedEmails; // remove old field if present
     await env.EMAILS.put(username, JSON.stringify(user));
-    await env.EMAILS.put(address, JSON.stringify({ createdAt: Date.now(), isPermanent: true, userId: username }));
 
-    return jsonResponse({ success: true, savedEmails });
+    return jsonResponse({ success: true, savedAddresses, count: savedAddresses.length });
 }
 
 async function handleDelete(request, user, env, username) {
     const { address } = await request.json();
     if (!address) return jsonResponse({ error: 'Address required' }, 400);
 
-    const savedEmails = user.savedEmails || [];
-    const index = savedEmails.findIndex(e => e.address === address);
-    if (index === -1) return jsonResponse({ error: 'Email not found' }, 404);
+    const normalized    = address.toLowerCase().trim();
+    const savedAddresses = user.savedAddresses || user.savedEmails || [];
+    const index = savedAddresses.findIndex(e => e.address === normalized);
+    if (index === -1) return jsonResponse({ error: 'Address not found in saved list' }, 404);
 
-    savedEmails.splice(index, 1);
-    user.savedEmails = savedEmails;
+    savedAddresses.splice(index, 1);
+    user.savedAddresses = savedAddresses;
+    delete user.savedEmails;
     await env.EMAILS.put(username, JSON.stringify(user));
-    await env.EMAILS.delete(address);
-    // Clean up any forwarding rule associated with this address
-    await env.EMAILS.delete(`forward:${address}`);
 
-    return jsonResponse({ success: true, savedEmails });
+    // Purge all emails + R2 attachments + INBOX_META for this address
+    const addrHash = await sha256Hex(normalized);
+    const domain   = normalized.split('@')[1] || '';
+    const dKey     = domainKey(domain);
+    const prefix   = `email:${dKey}:${addrHash}:`;
+
+    const list = await env.EMAILS.list({ prefix });
+    for (const k of list.keys) {
+        try {
+            const raw = await env.EMAILS.get(k.name);
+            if (raw && env.ATTACHMENTS) {
+                const mail = JSON.parse(raw);
+                for (const att of (mail.attachments || [])) {
+                    if (att.key) await env.ATTACHMENTS.delete(att.key).catch(() => {});
+                }
+            }
+        } catch (_) {}
+        await env.EMAILS.delete(k.name).catch(() => {});
+    }
+    await env.INBOX_META.delete(`meta:${addrHash}`).catch(() => {});
+    await env.INBOX_META.delete(`dedup:${addrHash}`).catch(() => {});
+    await env.EMAILS.delete(`forward:${normalized}`).catch(() => {});
+
+    return jsonResponse({ success: true, savedAddresses, count: savedAddresses.length, purged: list.keys.length });
 }
 
 function jsonResponse(data, status = 200) {

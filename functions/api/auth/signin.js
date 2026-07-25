@@ -3,10 +3,8 @@
  * POST /api/auth/signin
  * Body: { username, password }
  *
- * Username lookup rules (mirrors signup normalisation):
- *   - trim + lowercase
- *   - If no '@', replace spaces with underscores (regular username)
- *   - If contains '@', treat as email (Google users whose KV key is their email)
+ * Phase 2: Checks user.banned === true and returns 403 before issuing session.
+ * Google OAuth removed — password-only auth.
  */
 
 export async function onRequestPost(context) {
@@ -27,20 +25,16 @@ export async function onRequestPost(context) {
         }
 
         const userKey = `user:${normalised}`;
-        let user = await env.EMAILS.get(userKey, { type: 'json' });
-        let resolvedKey = userKey;
-
-        if (!user && !normalised.includes('@')) {
-            // Try username alias (for Google users who set a password and registered an alias)
-            const aliasTarget = await env.EMAILS.get(`user_ptr:${normalised}`);
-            if (aliasTarget) {
-                resolvedKey = aliasTarget;
-                user = await env.EMAILS.get(aliasTarget, { type: 'json' });
-            }
-        }
+        const user = await env.EMAILS.get(userKey, { type: 'json' });
+        const resolvedKey = userKey;
 
         if (!user) {
             return jsonResponse({ error: 'Invalid username or password' }, 401);
+        }
+
+        // Banned check — reject before any further processing
+        if (user.banned === true) {
+            return jsonResponse({ error: 'Your account has been suspended. Contact support.' }, 403);
         }
 
         // Hash provided password with stored salt and compare

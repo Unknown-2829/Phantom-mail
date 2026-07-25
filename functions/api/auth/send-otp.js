@@ -43,40 +43,17 @@ export async function onRequestPost(context) {
 
         } else if (type === 'password_reset') {
             if (!username) return jsonResponse({ error: 'Username is required' }, 400);
-            // Normalise the same way signin does
             let normalised = username.trim().toLowerCase();
             if (!normalised.includes('@')) normalised = normalised.replace(/\s+/g, '_');
             userKey = `user:${normalised}`;
-            // Look up user
-            let user = await env.EMAILS.get(userKey, { type: 'json' });
-            // Try username alias (for Google users who set a password and registered a display-name alias)
-            if (!user) {
-                const aliasKey = `user_ptr:${normalised}`;
-                const aliasTarget = await env.EMAILS.get(aliasKey);
-                if (aliasTarget) {
-                    userKey = aliasTarget;
-                    const aliasedUser = await env.EMAILS.get(aliasTarget, { type: 'json' });
-                    if (aliasedUser) {
-                        user = aliasedUser;
-                    }
-                }
-            }
+            const user = await env.EMAILS.get(userKey, { type: 'json' });
             if (!user) {
                 return jsonResponse({ error: 'Username not found' }, 404);
             }
-            if (!user.email && Array.isArray(user.authProviders) && user.authProviders.includes('google')) {
-                // Google user — use their Google email (extracted from userKey: user:email@gmail.com)
-                const googleEmail = userKey.replace(/^user:/, '');
-                if (googleEmail.includes('@')) {
-                    targetEmail = googleEmail.toLowerCase();
-                } else {
-                    return jsonResponse({ error: 'No recovery email on file for this account' }, 400);
-                }
-            } else if (!user.email) {
+            if (!user.email) {
                 return jsonResponse({ error: 'No recovery email on file for this account' }, 400);
-            } else {
-                targetEmail = user.email.toLowerCase();
             }
+            targetEmail = user.email.toLowerCase();
 
         } else {
             // add_email — requires auth token from a logged-in user
@@ -132,7 +109,7 @@ export async function onRequestPost(context) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                from: 'Phantom Mail <noreply@unknownlll2829.qzz.io>',
+                from: 'Phantom Mail <noreply@unkn0wn.qzz.io>',
                 to: [targetEmail],
                 subject,
                 html
@@ -154,12 +131,9 @@ export async function onRequestPost(context) {
     }
 }
 
-const RESERVED_EMAILS = ['noreply@unknownlll2829.qzz.io', 'phantom-mail@unknownlll2829.qzz.io'];
-const APP_DOMAIN = 'unknownlll2829.qzz.io';
-
 function isReservedEmail(email) {
     const lower = email.toLowerCase();
-    return RESERVED_EMAILS.includes(lower) || lower.endsWith('@' + APP_DOMAIN);
+    return lower.endsWith('@unkn0wn.qzz.io') || lower.endsWith('@phant0m.qzz.io');
 }
 
 function generateOtpCode() {
