@@ -12,8 +12,15 @@ const originalTitle = document.title;
 // Reusable SVG markup for the Sign-In account icon button
 const SIGN_IN_BTN_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="flex-shrink:0"><title>Account icon</title><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg> Sign In';
 
+// Supported domains for temp address generation
+const ALLOWED_DOMAINS = ['unkn0wn.qzz.io', 'phant0m.qzz.io'];
 // Domain used for permanent / custom email addresses
 const PERM_EMAIL_DOMAIN = '@unkn0wn.qzz.io';
+// Pusher instance (initialized once)
+let _pusher = null;
+let _pusherChannel  = null; // inbox channel (per address)
+let _pusherSystem   = null; // system/announcements channel
+let _pusherUserChan = null; // user channel (payment confirmations, alerts)
 // Allowed characters for permanent email usernames
 const PERM_USERNAME_RE = /^[a-z0-9._-]+$/;
 
@@ -94,6 +101,12 @@ function init() {
 
   requestNotificationPermission();
   updateLogoForUser();
+  _initDomainPicker();
+  _startSessionExpiryWatch();
+  _initKeyboardShortcuts();
+
+  // ── Session boot via server (authoritative) ─────────────────
+  _bootSession().catch(() => {});
 
   const saved = localStorage.getItem('tempEmail');
   const savedTime = localStorage.getItem('emailCreatedAt');
@@ -104,10 +117,11 @@ function init() {
     startAutoRefresh();
     refreshEmails();
     loadSentEmails();
+    _initPusher(); // connect real-time after email is known
   } else {
     localStorage.removeItem('tempEmail');
     localStorage.removeItem('emailCreatedAt');
-    generateEmail();
+    generateEmail(); // _initPusher called after email is set
   }
 
   // Wire up signup email input dynamic behavior
@@ -115,6 +129,177 @@ function init() {
   if (signupEmailInput) {
     signupEmailInput.addEventListener('input', _updateSignupEmailUI);
   }
+}
+
+// ── Boot: validate session via server & sync all state ──────────
+// Uses the new /api/auth/session endpoint which returns full user state.
+// Falls back to cached localStorage gracefully if network is down.
+async function _bootSession() {
+  const token = localStorage.getItem('authToken');
+  if (!token) return;
+  try {
+    const res = await fetch('/api/auth/session', {
+      headers: { 'Authorization': `Bearer ${token}`, 'Cache-Control': 'no-cache' }
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        // Session invalid on server — clear local storage silently
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('username');
+        localStorage.removeItem('isPremium');
+        localStorage.removeItem('apiKey');
+        localStorage.removeItem('plan');
+        initAuthState();
+      }
+      return;
+    }
+    const data = await res.json();
+    if (!data.valid) {
+      if (data.reason === 'expired' || data.reason === 'not_found' || data.reason === 'banned') {
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('username');
+        localStorage.removeItem('isPremium');
+        localStorage.removeItem('apiKey');
+        localStorage.removeItem('plan');
+        initAuthState();
+        if (data.reason === 'banned') showToast('🚫 Account suspended.');
+        else if (data.reason === 'expired') showToast('🔒 Session expired. Please sign in.');
+      }
+      return;
+    }
+
+    // Sync all state from server
+    localStorage.setItem('username',   data.username);
+    localStorage.setItem('isPremium',  data.isPremium ? 'true' : 'false');
+    localStorage.setItem('plan',       data.plan || 'free');
+    if (data.apiKey) localStorage.setItem('apiKey', data.apiKey);
+    else localStorage.removeItem('apiKey');
+    if (data.photoURL) localStorage.setItem('photoURL', data.photoURL);
+
+    // Preferred domain from session → update picker
+    if (data.preferredDomain && window.ALLOWED_DOMAINS?.includes(data.preferredDomain)) {
+      localStorage.setItem('preferredDomain', data.preferredDomain);
+    }
+
+    initAuthState();
+
+    // Re-init Pusher with fresh auth headers after session refresh
+    if (_pusher) {
+      _pusher.config.auth.headers = { 'Authorization': `Bearer ${token}` };
+    }
+  } catch (_) { /* network offline — use cached state */ }
+}
+
+// ── Domain Picker ────────────────────────────────────────────
+function _initDomainPicker() {
+  // Populate any <select id="domain-picker"> that exists in the HTML
+  const picker = document.getElementById('domain-picker');
+  if (!picker) return;
+  picker.innerHTML = '';
+  ALLOWED_DOMAINS.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d;
+    opt.textContent = '@' + d;
+    picker.appendChild(opt);
+  });
+  const saved = localStorage.getItem('preferredDomain');
+  if (saved && ALLOWED_DOMAINS.includes(saved)) picker.value = saved;
+  picker.addEventListener('change', () => {
+    localStorage.setItem('preferredDomain', picker.value);
+  });
+}
+
+function _preferredDomain() {
+  const saved = localStorage.getItem('preferredDomain');
+  return saved && ALLOWED_DOMAINS.includes(saved) ? saved : ALLOWED_DOMAINS[0];
+}
+
+// ── Session Expiry Warning ───────────────────────────────────
+// We use the server-set expiresAt from /api/auth/session rather than
+// trying to decode a JWT (our sessions are opaque tokens, not JWTs).
+function _startSessionExpiryWatch() {
+  setInterval(() => {
+    const token = localStorage.getItem('authToken');
+    if (!token) return;
+    // Check cached expiresAt (set by _bootSession / refreshPremiumStatus)
+    const expiresAt = parseInt(localStorage.getItem('sessionExpiresAt') || '0', 10);
+    if (!expiresAt) return;
+    const msLeft = expiresAt - Date.now();
+    if (msLeft > 0 && msLeft < 24 * 60 * 60 * 1000) _showSessionExpiryBanner();
+  }, 60 * 60 * 1000); // check every hour
+}
+
+function _showSessionExpiryBanner() {
+  if (document.getElementById('session-expiry-banner')) return;
+  const banner = document.createElement('div');
+  banner.id = 'session-expiry-banner';
+  banner.style.cssText = 'position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:#1a1a2e;border:1px solid #00e5b3;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;z-index:9999;display:flex;gap:12px;align-items:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);';
+  const stayBtn = document.createElement('button');
+  stayBtn.style.cssText = 'background:#00e5b3;color:#000;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-weight:700;';
+  stayBtn.textContent = 'Stay signed in';
+  stayBtn.addEventListener('click', () => {
+    refreshPremiumStatus();
+    const b = document.getElementById('session-expiry-banner');
+    if (b) b.remove();
+  });
+  banner.appendChild(document.createTextNode('⏱ Session expiring soon '));
+  banner.appendChild(stayBtn);
+  document.body.appendChild(banner);
+  setTimeout(() => banner.remove?.(), 5 * 60 * 1000);
+}
+
+// ── iOS-safe haptic ──────────────────────────────────────────
+function haptic(pattern = [10]) {
+  if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(pattern);
+}
+
+// ── Keyboard Shortcuts ───────────────────────────────────────
+function _initKeyboardShortcuts() {
+  document.addEventListener('keydown', e => {
+    // Skip if focus is in an input/textarea/contenteditable
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+    const modal = document.getElementById('email-modal');
+    const modalOpen = modal && modal.classList.contains('show');
+    switch (e.key) {
+      case 'j': case 'J':
+        if (!modalOpen && emailsList.length > 0) {
+          const next = Math.min((currentViewIndex < 0 ? 0 : currentViewIndex + 1), emailsList.length - 1);
+          viewEmail(next);
+        } else if (modalOpen) { closeModal(); const n = Math.min(currentViewIndex + 1, emailsList.length - 1); if(n >= 0) viewEmail(n); }
+        break;
+      case 'k': case 'K':
+        if (modalOpen && currentViewIndex > 0) { closeModal(); viewEmail(currentViewIndex - 1); }
+        break;
+      case 'e': case 'E':
+        if (modalOpen) deleteCurrentEmail();
+        break;
+      case 'r': case 'R':
+        if (modalOpen && currentViewIndex >= 0) {
+          const email = emailsList[currentViewIndex];
+          if (email) _replyToEmail(email);
+        }
+        break;
+      case '?':
+        _showKeyboardShortcutsModal();
+        break;
+    }
+  });
+}
+
+function _replyToEmail(email) {
+  openCompose();
+  const sender = parseSender(email.from, email);
+  const toEl = document.getElementById('compose-to');
+  const subEl = document.getElementById('compose-subject');
+  const editorEl = document.getElementById('compose-editor');
+  if (toEl) toEl.value = sender.email || email.from || '';
+  if (subEl) subEl.value = (email.subject || '').startsWith('Re:') ? email.subject : 'Re: ' + (email.subject || '');
+  if (editorEl) editorEl.innerHTML = `<br><br><blockquote style="border-left:3px solid #555;margin:0;padding:0 12px;color:#aaa">--- Original ---<br>${escapeHtml(sender.name || sender.email)} wrote:<br>${email.htmlBody || escapeHtml(email.body || '')}</blockquote>`;
+}
+
+function _showKeyboardShortcutsModal() {
+  showToast('J/K: next/prev  E: delete  R: reply  ?: shortcuts');
 }
 
 function _updateSignupEmailUI() {
@@ -166,8 +351,14 @@ async function generateEmail() {
 
   try {
     const token = localStorage.getItem('authToken');
-    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-    const response = await fetch('/api/generate', { method: 'POST', headers });
+    const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+    // Pass preferred domain so the worker can use it
+    const domain = _preferredDomain();
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ domain })
+    });
     if (!response.ok) throw new Error('Failed');
 
     const data = await response.json();
@@ -180,6 +371,7 @@ async function generateEmail() {
     localStorage.setItem('emailCreatedAt', Date.now().toString());
 
     startAutoRefresh();
+    _initPusher(); // connect (or reconnect) to the new address channel
     showToast('✨ Email ready!');
   } catch (e) {
     $emailDisplay.value = 'Error - Tap Regenerate';
@@ -1642,8 +1834,8 @@ function initAuthState() {
 }
 
 // ===== Refresh Premium Status from Server =====
-// Called after sign-in and on page load to sync premium status with server
-// (handles the case where admin grants/revokes premium without a fresh sign-in)
+// Uses /api/auth/session for fast boot (returns all fields in one call).
+// Falls back to /api/user/profile for detailed refresh.
 let _premiumRefreshPending = false;
 async function refreshPremiumStatus() {
   if (_premiumRefreshPending) return;
@@ -1651,34 +1843,56 @@ async function refreshPremiumStatus() {
   if (!token) return;
   _premiumRefreshPending = true;
   try {
-    const res = await fetch('/api/user/profile', {
-      headers: { 'Authorization': `Bearer ${token}` }
+    // Fast path: session endpoint returns full state in one call
+    const res = await fetch('/api/auth/session', {
+      headers: { 'Authorization': `Bearer ${token}`, 'Cache-Control': 'no-cache' }
     });
     if (res.ok) {
       const data = await res.json();
-      const prevPremium = localStorage.getItem('isPremium') === 'true';
-      const newPremium = !!data.isPremium;
-      // Sync photoURL from server (may have been updated via avatar upload)
-      if (data.photoURL !== undefined) {
-        if (data.photoURL) localStorage.setItem('photoURL', data.photoURL);
-        else localStorage.removeItem('photoURL');
+      if (!data.valid) {
+        // Session invalid — sign out
+        localStorage.removeItem('authToken');
+        localStorage.removeItem('username');
+        localStorage.removeItem('isPremium');
+        localStorage.removeItem('apiKey');
+        localStorage.removeItem('plan');
+        initAuthState();
+        if (data.reason === 'banned') showToast('🚫 Account suspended.');
+        else showToast('🔒 Session expired. Please sign in again.');
+        return;
       }
+      const prevPremium = localStorage.getItem('isPremium') === 'true';
+      const newPremium  = !!data.isPremium;
+      // Sync all fields
+      localStorage.setItem('username',   data.username);
+      localStorage.setItem('isPremium',  newPremium ? 'true' : 'false');
+      localStorage.setItem('plan',       data.plan || 'free');
+      if (data.apiKey) localStorage.setItem('apiKey', data.apiKey);
+      if (data.photoURL) localStorage.setItem('photoURL', data.photoURL);
+      else if (data.photoURL === null) localStorage.removeItem('photoURL');
+
       if (prevPremium !== newPremium) {
-        localStorage.setItem('isPremium', newPremium ? 'true' : 'false');
         initAuthState();
         if (newPremium) showToast('⭐ Premium activated!');
-      } else if (data.photoURL !== localStorage.getItem('photoURL')) {
-        initAuthState(); // re-render with new avatar
+        else showToast('ℹ️ Premium expired. Reverted to Free.');
+      } else {
+        initAuthState(); // re-render to pick up any avatar/username changes
       }
-    } else if (res.status === 401) {
-      // Session expired — sign out silently
+
+      // Update Pusher auth headers with the refreshed token
+      if (_pusher) {
+        _pusher.config.auth.headers = { 'Authorization': `Bearer ${token}` };
+      }
+    } else if (res.status === 401 || res.status === 403) {
       localStorage.removeItem('authToken');
       localStorage.removeItem('username');
       localStorage.removeItem('isPremium');
+      localStorage.removeItem('apiKey');
+      localStorage.removeItem('plan');
       initAuthState();
       showToast('🔒 Session expired. Please sign in again.');
     }
-  } catch (_) { /* network error; ignore silently */ }
+  } catch (_) { /* network error — use cached state */ }
   finally {
     _premiumRefreshPending = false;
   }
@@ -1746,7 +1960,8 @@ async function loadSavedEmails() {
 function renderSavedEmails(list) {
   const container = document.getElementById('saved-emails-list');
   const countEl = document.getElementById('saved-email-count');
-  if (countEl) countEl.textContent = `${list.length}/8`;
+  const isPremium = localStorage.getItem('isPremium') === 'true';
+  if (countEl) countEl.textContent = `${list.length}/${isPremium ? 15 : 1}`;
 
   if (list.length === 0) {
     container.innerHTML = '<div class="pdash-loading">No saved emails yet. Add one above.</div>';
@@ -1824,9 +2039,23 @@ async function loadApiKey() {
     const data = await res.json();
     if (!res.ok) { container.innerHTML = `<div class="pdash-loading">${escapeHtml(data.error || 'Error')}</div>`; return; }
     if (data.apiKey) {
+      const isPro = data.plan === 'pro';
+      const planBadge = isPro
+        ? '<span style="background:#7c5cfc;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700;">PRO</span>'
+        : '<span style="background:#333;color:#aaa;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;">FREE</span>';
+      const q = data.quotas || {};
+      const quotaHtml = `
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <span style="font-size:11px;color:#888;">📥 Receive: <b style="color:#fff;">${q.receive?.used||0}/${q.receive?.limit||10}</b></span>
+          <span style="font-size:11px;color:#888;">📤 Send: <b style="color:#fff;">${q.send?.used||0}/${q.send?.limit||0}</b></span>
+          <span style="font-size:11px;color:#888;">⚡ Generate: <b style="color:#fff;">${q.generate?.used||0}/${q.generate?.limit||10}</b></span>
+        </div>`;
       container.innerHTML = `
-        <span class="apikey-text" id="apikey-value">${escapeHtml(data.apiKey)}</span>
-        <button class="apikey-copy-btn" onclick="copyApiKey()">📋 Copy</button>
+        <div style="display:flex;align-items:center;gap:4px;">
+          <span class="apikey-text" id="apikey-value">${escapeHtml(data.apiKey)}</span>${planBadge}
+        </div>
+        ${quotaHtml}
+        <button class="apikey-copy-btn" onclick="copyApiKey()" style="margin-top:8px;">📋 Copy Key</button>
       `;
     } else {
       container.innerHTML = '<span class="apikey-none">No API key yet — generate one below.</span>';
@@ -1900,11 +2129,28 @@ function closeSignOutConfirm() {
   document.body.style.overflow = '';
 }
 
-function doSignOut() {
+async function doSignOut() {
   closeSignOutConfirm();
+  const token = localStorage.getItem('authToken');
+  // Server-side session invalidation (non-blocking)
+  if (token) {
+    fetch('/api/auth/session', {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    }).catch(() => {});
+  }
+  // Disconnect Pusher cleanly
+  if (_pusherChannel)  { try { _pusherChannel.unsubscribe(); } catch(_) {} _pusherChannel = null; }
+  if (_pusherSystem)   { try { _pusherSystem.unsubscribe(); } catch(_) {} _pusherSystem = null; }
+  if (_pusherUserChan) { try { _pusherUserChan.unsubscribe(); } catch(_) {} _pusherUserChan = null; }
+  if (_pusher) { try { _pusher.disconnect(); } catch(_) {} _pusher = null; }
+
   localStorage.removeItem('authToken');
   localStorage.removeItem('username');
   localStorage.removeItem('isPremium');
+  localStorage.removeItem('plan');
+  localStorage.removeItem('apiKey');
+  localStorage.removeItem('photoURL');
   closePremiumFlow();
   showToast('👋 Signed out');
   initAuthState();
@@ -1975,12 +2221,24 @@ async function signIn() {
     });
     const data = await res.json();
     if (res.ok) {
-      localStorage.setItem('authToken', data.token);
-      localStorage.setItem('username', data.username);
-      localStorage.setItem('isPremium', data.isPremium ? 'true' : 'false');
+      localStorage.setItem('authToken',  data.token);
+      localStorage.setItem('username',   data.username);
+      localStorage.setItem('isPremium',  data.isPremium ? 'true' : 'false');
+      localStorage.setItem('plan',       data.plan || 'free');
+      if (data.apiKey) localStorage.setItem('apiKey', data.apiKey);
+      else localStorage.removeItem('apiKey');
+      if (data.photoURL) localStorage.setItem('photoURL', data.photoURL);
+      else localStorage.removeItem('photoURL');
       closeAuth();
       closePremiumFlow();
       initAuthState();
+      // Re-init Pusher with the new auth token (subscribes to user channel)
+      if (_pusher) {
+        _pusher.config.auth.headers = { 'Authorization': `Bearer ${data.token}` };
+      } else {
+        _initPusher();
+      }
+      _subscribeUserChannel(data.token);
       showToast(data.isPremium ? '⭐ Welcome back, Premium!' : '✅ Signed in!');
     } else {
       showAuthError(data.error || 'Sign in failed');
@@ -2058,13 +2316,17 @@ async function _doCreateAccount(username, password, email, emailOtp, otpToken) {
     });
     const data = await res.json();
     if (res.ok) {
-      localStorage.setItem('authToken', data.token);
-      localStorage.setItem('username', data.username);
-      localStorage.setItem('isPremium', 'false');
+      localStorage.setItem('authToken',  data.token);
+      localStorage.setItem('username',   data.username);
+      localStorage.setItem('isPremium',  'false');
+      localStorage.setItem('plan',       'free');
+      if (data.apiKey) localStorage.setItem('apiKey', data.apiKey);
+      if (data.photoURL) localStorage.setItem('photoURL', data.photoURL);
       _signupOtpToken = null;
       closeAuth();
       initAuthState();
-      showToast('🎉 Account created!');
+      _subscribeUserChannel(data.token);
+      showToast('🎉 Account created! Your API key is ready.');
     } else {
       showAuthError(data.error || 'Signup failed');
     }
@@ -2237,8 +2499,9 @@ async function loadProfileData() {
 function renderProfileData(data) {
   const bodyEl = document.getElementById('profile-body');
   if (!bodyEl) return;
-  const { username, isPremium, premiumExpiry, authProviders, photoURL: serverPhotoURL,
-          hasEmail, emailVerified, maskedEmail } = data;
+  const { username, isPremium, premiumExpiry, daysLeft, authProviders, photoURL: serverPhotoURL,
+          hasEmail, emailVerified, maskedEmail, createdAt, lastLoginAt, lastLoginDevice,
+          lastLoginCountry, sentEmailCount, savedAddressCount, plan } = data;
 
   const photoURL = serverPhotoURL || localStorage.getItem('photoURL');
   const avatarLetter = username ? username[0].toUpperCase() : '?';
@@ -3600,9 +3863,18 @@ function toggleComposeMode() {
 }
 
 // ===== COMPOSE: Formatting =====
+// Uses document.execCommand which requires an active focus — call focus() first
+// so the CSP 'unsafe-inline' violation from onclick= attributes is avoided
+// by using addEventListener instead of inline event handlers.
 function composeFormat(cmd) {
-  document.getElementById('compose-editor').focus();
-  document.execCommand(cmd, false, null);
+  const editor = document.getElementById('compose-editor');
+  if (!editor) return;
+  editor.focus();
+  // Temporarily delegate so execCommand runs after focus is confirmed
+  requestAnimationFrame(() => {
+    try { document.execCommand(cmd, false, null); }
+    catch (e) { console.warn('execCommand', cmd, 'failed:', e.message); }
+  });
 }
 
 function composeInsertLink() {
@@ -3633,7 +3905,7 @@ async function sendComposedEmail() {
         errEl.classList.remove('hidden');
         return;
       }
-      from = `${customUsername}@unknownlll2829.qzz.io`;
+      from = `${customUsername}@unkn0wn.qzz.io`;
     }
   }
 
@@ -3775,13 +4047,29 @@ function renderSentBox() {
   }
 
   body.innerHTML = sentList.map((s, i) => {
-    const opens = s.opens || 0;
-    const toStr = Array.isArray(s.to) ? s.to.join(', ') : s.to;
-    const dateStr = formatDate(s.sentAt);
-    const openBadge = opens > 0
+    const opens      = s.uniqueOpens || s.opens || 0;
+    const clicks     = s.uniqueClicks || s.clicks || 0;
+    const status     = s.status || 'sent';
+    const toStr      = Array.isArray(s.to) ? s.to.join(', ') : s.to;
+    const dateStr    = formatDate(s.sentAt);
+
+    // Delivery status badge
+    const statusBadge = {
+      delivered:  `<span style="color:#00e5b3;font-size:11px;">✓ Delivered</span>`,
+      bounced:    `<span style="color:#ff4444;font-size:11px;">✗ Bounced</span>`,
+      failed:     `<span style="color:#ff4444;font-size:11px;">✗ Failed</span>`,
+      complained: `<span style="color:#ffa500;font-size:11px;">⚠ Spam Report</span>`,
+      suppressed: `<span style="color:#888;font-size:11px;">⊘ Suppressed</span>`,
+      delayed:    `<span style="color:#ffa500;font-size:11px;">⏳ Delayed</span>`,
+      sent:       `<span style="color:#888;font-size:11px;">⏳ Pending</span>`
+    }[status] || `<span style="color:#888;font-size:11px;">${status}</span>`;
+
+    const openBadge  = opens > 0
       ? `<span class="sent-opened-badge">👁 ${opens} open${opens > 1 ? 's' : ''}</span>`
       : `<span class="sent-unopened-badge">Not opened</span>`;
-    // Extract plain-text preview safely via DOM (avoids regex-based incomplete sanitization)
+    const clickBadge = clicks > 0
+      ? `<span style="font-size:11px;color:#7c5cfc;">🖱 ${clicks} click${clicks > 1 ? 's' : ''}</span>` : '';
+
     let bodyPreview = '';
     if (s.body) {
       const tmp = document.createElement('div');
@@ -3801,7 +4089,9 @@ function renderSentBox() {
           ${bodyPreview ? `<div class="sent-body-preview">${bodyPreview}</div>` : ''}
         </div>
         <div class="sent-row-meta">
+          ${statusBadge}
           ${openBadge}
+          ${clickBadge}
           <div class="sent-date">${dateStr}</div>
           <button class="sent-delete-btn" onclick="deleteSentEmail(event,${i})" title="Delete this sent email">🗑</button>
         </div>
@@ -3855,9 +4145,12 @@ function viewSentEmail(index) {
   const toStr = Array.isArray(s.to) ? s.to.join(', ') : s.to;
   const opens = s.opens || 0;
   const lastOpen = s.lastOpenAt ? formatDate(s.lastOpenAt) : 'Never';
-  const country = s.lastOpenCountry || '—';
-  const lastIp = s.lastOpenIp || '—';
-  const lastAgent = _parseUserAgent(s.lastOpenAgent || '');
+  const country   = s.lastOpenCountry || '—';
+  // IP is never stored raw — show device type from agent string instead
+  const lastDevice = s.lastOpenAgent || s.lastOpenDevice || '—';
+  const lastAgent  = typeof lastDevice === 'string' && lastDevice.length < 20
+    ? lastDevice  // already a device type string (e.g. 'mobile', 'mac')
+    : _parseUserAgent(lastDevice);
 
   // ── Fill modal header (avatar, from, date, subject — same slots as inbox) ──
   document.getElementById('modal-avatar').textContent = '📤';
@@ -3869,15 +4162,25 @@ function viewSentEmail(index) {
   // ── "To" goes in modal-meta-rows (same place inbox puts CC/BCC) ──
   const metaRowsEl = document.getElementById('modal-meta-rows');
   if (metaRowsEl) {
+    const status = s.status || 'sent';
+    const statusColor = { delivered:'#00e5b3', bounced:'#ff4444', failed:'#ff4444', complained:'#ffa500' }[status] || '#888';
+    const statusLabel = { delivered:'✅ Delivered', bounced:'✗ Bounced', failed:'✗ Failed', complained:'⚠ Spam Report', delayed:'⏳ Delayed', sent:'⏳ Sending…' }[status] || status;
+    const uniqueOpens  = s.uniqueOpens  || s.opens  || 0;
+    const uniqueClicks = s.uniqueClicks || s.clicks || 0;
     metaRowsEl.innerHTML = `
       <div class="meta-row">
         <span class="meta-label">To</span>
         <span class="meta-value">${escapeHtml(toStr)}</span>
       </div>
       <div class="meta-row">
-        <span class="meta-label">Status</span>
-        <span class="meta-value" style="color:${opens > 0 ? '#00d09c' : '#666'}">${opens > 0 ? `✅ Opened ${opens}×` : '⏳ Not opened yet'}</span>
-      </div>`;
+        <span class="meta-label">Delivery</span>
+        <span class="meta-value" style="color:${statusColor}">${statusLabel}</span>
+      </div>
+      <div class="meta-row">
+        <span class="meta-label">Opens</span>
+        <span class="meta-value" style="color:${uniqueOpens > 0 ? '#00d09c' : '#666'}">${uniqueOpens > 0 ? `👁 ${uniqueOpens} unique open${uniqueOpens > 1 ? 's' : ''}` : '⏳ Not opened yet'}</span>
+      </div>
+      ${uniqueClicks > 0 ? `<div class="meta-row"><span class="meta-label">Clicks</span><span class="meta-value" style="color:#7c5cfc">🖱 ${uniqueClicks} link click${uniqueClicks > 1 ? 's' : ''}</span></div>` : ''}`;
   }
 
   // ── Clear modal body, then render body exactly like inbox ──
@@ -3960,12 +4263,12 @@ function viewSentEmail(index) {
         <div class="analytics-label">Location</div>
       </div>
       <div class="analytics-item">
-        <div class="analytics-value" style="font-size:10px;word-break:break-all;">🌐 ${escapeHtml(lastIp)}</div>
-        <div class="analytics-label">Last IP</div>
-      </div>
-      <div class="analytics-item">
         <div class="analytics-value" style="font-size:11px;">💻 ${escapeHtml(lastAgent)}</div>
         <div class="analytics-label">Device</div>
+      </div>
+      <div class="analytics-item">
+        <div class="analytics-value" style="font-size:18px;">${opens > 0 ? '📬' : '📭'}</div>
+        <div class="analytics-label">${opens > 0 ? 'Opened' : 'Unopened'}</div>
       </div>
     </div>` : ''}
     ${historyHtml}`;
@@ -4053,11 +4356,201 @@ function _parseUserAgent(ua) {
 function _maskIp(ip) {
   if (!ip || ip === 'unknown') return '—';
   if (ip.includes(':')) {
-    // IPv6 — show first segment only
     const segs = ip.split(':');
     return segs.slice(0, 2).join(':') + ':…';
   }
   const parts = ip.split('.');
   if (parts.length === 4) return `${parts[0]}.${parts[1]}.*.*`;
   return ip;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PUSHER REAL-TIME (private channels + ETag polling fallback)
+// ═══════════════════════════════════════════════════════════════
+
+async function _sha256Short(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
+async function _initPusher() {
+  if (!currentEmail) return;
+  // Disconnect previous channel if address changed
+  if (_pusherChannel) { try { _pusherChannel.unbind_all(); } catch (_) {} }
+
+  // Check if Pusher SDK is available (loaded from index.html <script>)
+  if (typeof Pusher === 'undefined') {
+    console.warn('[Pusher] SDK not loaded — using ETag polling fallback');
+    return; // polling via startAutoRefresh() already handles this
+  }
+
+  const token = localStorage.getItem('authToken');
+
+  // Lazily create the Pusher instance once
+  if (!_pusher) {
+    // PUSHER_KEY and PUSHER_CLUSTER injected by wrangler as build-time vars or runtime config
+    const PUSHER_KEY     = window.__PUSHER_KEY__     || '';
+    const PUSHER_CLUSTER = window.__PUSHER_CLUSTER__ || 'ap2';
+    if (!PUSHER_KEY) { console.warn('[Pusher] No key configured'); return; }
+
+    _pusher = new Pusher(PUSHER_KEY, {
+      cluster: PUSHER_CLUSTER,
+      authEndpoint: '/api/pusher/auth',
+      auth: {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      }
+    });
+
+    // If Pusher connection fails → the ETag polling fallback is already running
+    _pusher.connection.bind('failed',      () => console.warn('[Pusher] connection failed — polling active'));
+    _pusher.connection.bind('unavailable', () => console.warn('[Pusher] unavailable — polling active'));
+
+    // Subscribe to system channel (announcements)
+    try {
+      _pusherSystem = _pusher.subscribe('private-system');
+      _pusherSystem.bind('announcement', data => _showAnnouncementBanner(data.text || data));
+    } catch (_) {}
+
+    // Subscribe to user-level channel (payment_confirmed, plan_changed, etc)
+    const t = localStorage.getItem('authToken');
+    if (t) await _subscribeUserChannel(t);
+  }
+
+  // Subscribe to inbox channel for this address
+  try {
+    const hash = await _sha256Short(currentEmail);
+    const channelName = `private-inbox-${hash}`;
+    _pusherChannel = _pusher.subscribe(channelName);
+
+    _pusherChannel.bind('new_email', data => {
+      // Add to inbox without a poll
+      if (data && data.key && !emailsList.find(e => e._key === data.key)) {
+        refreshEmails(); // fetch full data for the new email
+        haptic([15, 10, 15]);
+      }
+    });
+
+    _pusherChannel.bind('email_deleted', data => {
+      if (data && data.key) {
+        emailsList = emailsList.filter(e => e._key !== data.key);
+        scheduleRender();
+      }
+    });
+
+    _pusherChannel.bind('pusher:subscription_error', err => {
+      console.warn('[Pusher] inbox subscription error:', err);
+    });
+  } catch (err) {
+    console.warn('[Pusher] channel subscribe failed:', err);
+  }
+}
+
+// ── Subscribe to private-user channel for payment/plan events ────
+async function _subscribeUserChannel(token) {
+  if (!_pusher || !token) return;
+  try {
+    const userKey  = localStorage.getItem('username') || '';
+    if (!userKey) return;
+    const hash    = await _sha256Short(`user:${userKey}`);
+    const chanName = `private-user-${hash}`;
+    if (_pusherUserChan) { try { _pusherUserChan.unsubscribe(); } catch(_) {} }
+    _pusherUserChan = _pusher.subscribe(chanName);
+
+    // Payment confirmed — upgrade UI immediately without requiring a page reload
+    _pusherUserChan.bind('payment_confirmed', data => {
+      if (!data) return;
+      localStorage.setItem('isPremium', 'true');
+      localStorage.setItem('plan', 'pro');
+      initAuthState();
+      _cacheDel('profile');
+      showToast('🎉 Payment confirmed! Welcome to Pro.');
+      // Show a persistent banner with expiry date
+      const expDate = data.newExpiry ? new Date(data.newExpiry).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+      _showAnnouncementBanner(`⭐ Premium activated! ${data.planId === 'annual' ? '1 Year' : '30 Days'} plan active.${expDate ? ' Expires ' + expDate : ''}`);
+      refreshPremiumStatus();
+    });
+
+    _pusherUserChan.bind('plan_changed', data => {
+      if (!data) return;
+      refreshPremiumStatus();
+    });
+  } catch (err) {
+    console.warn('[Pusher] user channel subscribe failed:', err);
+  }
+}
+
+function _showAnnouncementBanner(text) {
+  if (!text) return;
+  const existing = document.getElementById('announcement-banner');
+  if (existing) existing.remove();
+  const banner = document.createElement('div');
+  banner.id = 'announcement-banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(135deg,#7c5cfc,#00e5b3);color:#fff;text-align:center;padding:10px 16px;font-size:13px;font-weight:600;z-index:10000;display:flex;align-items:center;justify-content:center;gap:12px;';
+  banner.innerHTML = `📢 ${escapeHtml(text)} <button onclick="this.parentElement.remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;border-radius:4px;padding:2px 8px;cursor:pointer;">✕</button>`;
+  document.body.insertBefore(banner, document.body.firstChild);
+  setTimeout(() => banner.remove?.(), 30000);
+}
+
+// ── Google Login stub (Google OAuth removed — show auth modal instead) ──
+function googleLogin() {
+  showToast('🔐 Please use username + password to sign in.');
+  const authModal = document.getElementById('auth-modal');
+  if (authModal && !authModal.classList.contains('show')) openAuth();
+}
+
+// ── Google Link stub (Google OAuth removed) ──────────────────
+function linkGoogleAccount() {
+  showToast('Google linking has been removed. Use username + password.');
+}
+
+// ── Payment Status Check ─────────────────────────────────────
+// Check the live status of a NOWPayments payment from the frontend.
+async function checkPaymentStatus(paymentId) {
+  const token = localStorage.getItem('authToken');
+  if (!token || !paymentId) return null;
+  try {
+    const res = await fetch(`/api/payments/status?paymentId=${encodeURIComponent(paymentId)}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data;
+  } catch (_) { return null; }
+}
+
+// ── Payment History ──────────────────────────────────────────
+async function loadPaymentHistory() {
+  const token = localStorage.getItem('authToken');
+  if (!token) return [];
+  try {
+    const res = await fetch('/api/payments/history', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.payments || [];
+  } catch (_) { return []; }
+}
+
+// ── API Key Regen with Grace Period Awareness ────────────────
+// Called from the dashboard when user wants a new key.
+// Backend keeps old key alive for 24h (grace period).
+async function regenerateApiKey() {
+  const token = localStorage.getItem('authToken');
+  if (!token) { showToast('❌ Sign in required'); return; }
+  if (!confirm('Regenerate your API key? The old key stays valid for 24 hours.')) return;
+  try {
+    const res = await fetch('/api/user/api-key', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (data.apiKey) localStorage.setItem('apiKey', data.apiKey);
+      showToast('🔑 New API key generated! Old key valid for 24h.');
+      loadApiKey();
+    } else {
+      showToast('❌ ' + (data.error || 'Failed'));
+    }
+  } catch (_) { showToast('❌ Network error'); }
 }

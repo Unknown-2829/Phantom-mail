@@ -251,6 +251,7 @@ export async function onRequestPost(context) {
       'X-Mailer': 'Phantom Mail (https://mail.unknowns.app)',
       'X-Tracking-ID': trackingId
     },
+    ...(body.track === false || body.disableTracking === true ? { open_tracking: false, click_tracking: false } : {}),
     // Resend tags — returned verbatim in every webhook event payload
     // webhooks/resend.js reads data.tags.trackingId to resolve the KV record
     tags: [

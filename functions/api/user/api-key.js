@@ -1,27 +1,36 @@
 /**
  * API Key Management
- * GET  /api/user/api-key → Get current key + quota stats
- * POST /api/user/api-key → Regenerate key (old deleted immediately, new issued)
+ * GET     /api/user/api-key → Get current key + quota stats
+ * POST    /api/user/api-key → Regenerate key (old key gets 24hr grace period)
+ * DELETE  /api/user/api-key → Revoke current key immediately
+ * OPTIONS /api/user/api-key → CORS preflight
  *
- * Phase 2:
- *   - Key format: pm_free_<hex32> or pm_pro_<hex32> — distinguishable at a glance
- *   - All users have a key (generated at signup; guaranteed to exist)
- *   - Key stored in API_KEYS with: { plan, createdAt, usedToday, lastUsed, userId }
- *   - On regenerate: old key deleted immediately, no grace period
- *   - Returns current quota stats alongside key
+ * Key format: pm_free_<hex32> | pm_pro_<hex32> — distinguishable at a glance
+ * Grace period: old key remains valid for 24hrs after regeneration to prevent
+ *   breaking in-flight API calls. Stored as `apikey:grace:{oldKey}` in API_KEYS.
  */
 
 export async function onRequest(context) {
     const { request, env } = context;
 
+    if (request.method === 'OPTIONS') {
+        return new Response(null, {
+            headers: {
+                'Access-Control-Allow-Origin':  '*',
+                'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+            }
+        });
+    }
+
     const token = request.headers.get('Authorization')?.replace('Bearer ', '');
-    if (!token) return jsonResponse({ error: 'Unauthorized' }, 401);
+    if (!token) return json({ error: 'Unauthorized' }, 401);
 
     const session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
-    if (!session || session.expiresAt < Date.now()) return jsonResponse({ error: 'Session expired' }, 401);
+    if (!session || session.expiresAt < Date.now()) return json({ error: 'Session expired' }, 401);
 
     const user = await env.EMAILS.get(session.username, { type: 'json' });
-    if (!user) return jsonResponse({ error: 'User not found' }, 404);
+    if (!user) return json({ error: 'User not found' }, 404);
 
     // Auto-revoke expired premium
     let isPremium = user.isPremium;
@@ -43,9 +52,10 @@ export async function onRequest(context) {
     }
 
     switch (request.method) {
-        case 'GET':  return handleGet(user, env, isPremium, session.username);
-        case 'POST': return handlePost(user, env, session.username, isPremium);
-        default:     return jsonResponse({ error: 'Method not allowed' }, 405);
+        case 'GET':    return handleGet(user, env, isPremium, session.username);
+        case 'POST':   return handlePost(user, env, session.username, isPremium);
+        case 'DELETE': return handleDelete(user, env, session.username);
+        default:       return json({ error: 'Method not allowed' }, 405);
     }
 }
 
@@ -78,28 +88,35 @@ async function handleGet(user, env, isPremium, username) {
         }
     }
 
-    const quotas = {
-        generate:   { limit: isPremium ? 500 : 10,  used: keyMeta?.generateToday  || 0 },
-        receive:    { limit: isPremium ? 500 : 10,  used: keyMeta?.receiveToday   || 0 },
-        send:       { limit: isPremium ? 50  : 0,   used: keyMeta?.sendToday      || 0 }
-    };
+    const quotas = buildQuotas(isPremium, keyMeta);
 
-    return jsonResponse({
+    return json({
         apiKey,
-        plan: isPremium ? 'pro' : 'free',
+        plan:      isPremium ? 'pro' : 'free',
         createdAt: user.apiKeyCreatedAt || null,
         quotas,
-        lastUsed: keyMeta?.lastUsed || null
+        lastUsed:  keyMeta?.lastUsed || null
     });
 }
 
 async function handlePost(user, env, username, isPremium) {
     const plan   = isPremium ? 'pro' : 'free';
     const newKey = generateApiKey(plan);
+    const oldKey = user.apiKey;
 
-    // Delete old key immediately (no grace period — old key is invalid instantly)
-    if (user.apiKey && env.API_KEYS) {
-        await env.API_KEYS.delete(user.apiKey).catch(() => {});
+    // 24-hour grace period for the old key — keeps in-flight API calls working
+    if (oldKey && env.API_KEYS) {
+        const oldMeta = await env.API_KEYS.get(oldKey, { type: 'json' }).catch(() => null);
+        if (oldMeta) {
+            await env.API_KEYS.put(`apikey:grace:${oldKey}`, JSON.stringify({
+                ...oldMeta,
+                grace: true,
+                gracedAt: Date.now(),
+                replacedBy: newKey
+            }), { expirationTtl: 86400 }); // 24hr TTL
+        }
+        // Delete the primary slot immediately
+        await env.API_KEYS.delete(oldKey).catch(() => {});
     }
 
     user.apiKey = newKey;
@@ -113,17 +130,31 @@ async function handlePost(user, env, username, isPremium) {
         }));
     }
 
-    return jsonResponse({
+    return json({
         success: true,
-        apiKey: newKey,
+        apiKey:     newKey,
         plan,
-        createdAt: user.apiKeyCreatedAt,
-        quotas: {
-            generate: { limit: isPremium ? 500 : 10,  used: 0 },
-            receive:  { limit: isPremium ? 500 : 10,  used: 0 },
-            send:     { limit: isPremium ? 50  : 0,   used: 0 }
-        }
+        createdAt:  Date.now(),
+        gracePeriod: { oldKey: oldKey ? '***' + oldKey.slice(-6) : null, expiresIn: '24h' },
+        quotas: buildQuotas(isPremium, null)
     });
+}
+
+async function handleDelete(user, env, username) {
+    if (!user.apiKey) return json({ error: 'No active API key to revoke' }, 404);
+    if (env.API_KEYS) await env.API_KEYS.delete(user.apiKey).catch(() => {});
+    user.apiKey = null;
+    user.apiKeyCreatedAt = null;
+    await env.EMAILS.put(username, JSON.stringify(user));
+    return json({ success: true, message: 'API key revoked immediately' });
+}
+
+function buildQuotas(isPremium, keyMeta) {
+    return {
+        generate: { limit: isPremium ? 200 : 50,   used: keyMeta?.generateToday || 0 },
+        receive:  { limit: isPremium ? 500 : 50,   used: keyMeta?.receiveToday  || 0 },
+        send:     { limit: isPremium ? 50  : 0,    used: keyMeta?.sendToday     || 0 }
+    };
 }
 
 function generateApiKey(plan = 'free') {
@@ -132,9 +163,12 @@ function generateApiKey(plan = 'free') {
     return `pm_${plan}_${hex}`;
 }
 
-function jsonResponse(data, status = 200) {
+function json(data, status = 200) {
     return new Response(JSON.stringify(data), {
         status,
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     });
 }
+
+// Legacy alias for any callers that use the old name
+const jsonResponse = json;

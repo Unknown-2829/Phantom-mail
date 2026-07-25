@@ -3,8 +3,15 @@
  * POST /api/auth/signin
  * Body: { username, password }
  *
- * Phase 2: Checks user.banned === true and returns 403 before issuing session.
- * Google OAuth removed — password-only auth.
+ * Returns: { token, username, isPremium, plan, apiKey, photoURL, expiresAt }
+ *
+ * Features:
+ *   - Banned account check (403)
+ *   - Premium expiry auto-revoke
+ *   - lastLoginAt + lastLoginIp + lastLoginAgent tracked on user record
+ *   - Session stores UA + IP for audit (never returned to client)
+ *   - apiKey included in response so frontend can initialise API calls immediately
+ *   - Google OAuth removed — password-only auth
  */
 
 export async function onRequestPost(context) {
@@ -14,83 +21,118 @@ export async function onRequestPost(context) {
         const { username, password } = await request.json();
 
         if (!username || !password) {
-            return jsonResponse({ error: 'Username and password required' }, 400);
+            return json({ error: 'Username and password required' }, 400);
         }
 
-        // Normalise username: trim + lowercase; replace spaces with underscores
-        // unless it looks like an email (Google users sign in with their email address)
-        let normalised = username.trim().toLowerCase();
-        if (!normalised.includes('@')) {
-            normalised = normalised.replace(/\s+/g, '_');
-        }
+        // Normalise: trim + lowercase; spaces → underscores
+        const normalised = username.trim().toLowerCase().replace(/\s+/g, '_');
+        const userKey    = `user:${normalised}`;
 
-        const userKey = `user:${normalised}`;
         const user = await env.EMAILS.get(userKey, { type: 'json' });
-        const resolvedKey = userKey;
-
         if (!user) {
-            return jsonResponse({ error: 'Invalid username or password' }, 401);
+            // Constant-time dummy hash to prevent user enumeration via timing
+            await hashPassword('dummy_password_!!', 'dummy_salt_!!').catch(() => {});
+            return json({ error: 'Invalid username or password' }, 401);
         }
 
-        // Banned check — reject before any further processing
+        // ── Banned check ─────────────────────────────────────────────────────
         if (user.banned === true) {
-            return jsonResponse({ error: 'Your account has been suspended. Contact support.' }, 403);
+            return json({ error: 'Your account has been suspended. Contact support@unkn0wn.qzz.io' }, 403);
         }
 
-        // Hash provided password with stored salt and compare
+        // ── Password verify ───────────────────────────────────────────────────
+        if (!user.passwordHash || !user.salt) {
+            return json({ error: 'Account has no password set. Use password reset.' }, 400);
+        }
+
         const passwordHash = await hashPassword(password, user.salt);
-        if (passwordHash !== user.passwordHash) {
-            return jsonResponse({ error: 'Invalid username or password' }, 401);
+        if (!constantTimeEqual(passwordHash, user.passwordHash)) {
+            return json({ error: 'Invalid username or password' }, 401);
         }
 
-        // Check premium expiry
+        // ── Auto-revoke expired premium ───────────────────────────────────────
         let isPremium = user.isPremium;
         if (isPremium && user.premiumExpiry && user.premiumExpiry < Date.now()) {
-            // Premium expired — update user
-            user.isPremium = false;
+            user.isPremium    = false;
             user.premiumExpiry = null;
-            await env.EMAILS.put(resolvedKey, JSON.stringify(user));
-            isPremium = false;
+            user.plan          = 'free';
+            isPremium          = false;
+            // Downgrade API key prefix if needed
+            if (user.apiKey?.startsWith('pm_pro_') && env.API_KEYS) {
+                const freeKey = 'pm_free_' + Array.from(crypto.getRandomValues(new Uint8Array(16)))
+                    .map(b => b.toString(16).padStart(2, '0')).join('');
+                await env.API_KEYS.put(freeKey, JSON.stringify({
+                    key: freeKey, userId: userKey, plan: 'free',
+                    createdAt: Date.now(), usedToday: 0, lastUsed: null
+                }));
+                await env.API_KEYS.delete(user.apiKey).catch(() => {});
+                user.apiKey = freeKey;
+            }
         }
 
-        // Create session
-        const token = generateToken();
+        // ── Track login metadata ──────────────────────────────────────────────
+        const ip    = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || null;
+        const ua    = request.headers.get('User-Agent') || null;
+        const country = request.headers.get('CF-IPCountry') || null;
+
+        user.lastLoginAt      = Date.now();
+        user.lastLoginIp      = ip;
+        user.lastLoginCountry = country;
+        // Don't save UA raw — save device type only (privacy)
+        user.lastLoginDevice  = parseDeviceType(ua);
+        await env.EMAILS.put(userKey, JSON.stringify(user));
+
+        // ── Create session ────────────────────────────────────────────────────
+        const token       = generateToken();
+        const expiresAt   = Date.now() + 7 * 24 * 60 * 60 * 1000;
         const sessionData = {
-            username: resolvedKey,
+            username:  userKey,
             createdAt: Date.now(),
-            expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000)
+            expiresAt,
+            ip,
+            country,
+            device: parseDeviceType(ua)
         };
         await env.EMAILS.put(`session:${token}`, JSON.stringify(sessionData), {
             expirationTtl: 7 * 24 * 60 * 60
         });
 
-        return jsonResponse({
-            success: true,
+        return json({
+            success:      true,
             token,
-            username: user.displayUsername || normalised,
+            username:     user.displayUsername || normalised,
             isPremium,
-            photoURL: user.photoURL || null
+            plan:         user.plan || 'free',
+            premiumExpiry: user.premiumExpiry || null,
+            apiKey:       user.apiKey || null,
+            photoURL:     user.photoURL || null,
+            expiresAt
         });
 
     } catch (error) {
-        console.error('Signin error:', error);
-        return jsonResponse({ error: 'Server error' }, 500);
+        console.error('[auth/signin] error:', error.message);
+        return json({ error: 'Server error' }, 500);
     }
 }
 
+export async function onRequestOptions() {
+    return new Response(null, {
+        headers: {
+            'Access-Control-Allow-Origin':  '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type'
+        }
+    });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 async function hashPassword(password, salt) {
-    const encoder = new TextEncoder();
-    const keyMaterial = await crypto.subtle.importKey(
-        'raw',
-        encoder.encode(password),
-        'PBKDF2',
-        false,
-        ['deriveBits']
-    );
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
     const bits = await crypto.subtle.deriveBits(
-        { name: 'PBKDF2', salt: encoder.encode(salt), iterations: 100000, hash: 'SHA-256' },
-        keyMaterial,
-        256
+        { name: 'PBKDF2', salt: enc.encode(salt), iterations: 100000, hash: 'SHA-256' },
+        key, 256
     );
     return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -100,7 +142,26 @@ function generateToken() {
         .map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function jsonResponse(data, status = 200) {
+function constantTimeEqual(a, b) {
+    if (a.length !== b.length) return false;
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+}
+
+function parseDeviceType(ua) {
+    if (!ua) return 'unknown';
+    const s = ua.toLowerCase();
+    if (s.includes('iphone') || (s.includes('android') && s.includes('mobile'))) return 'mobile';
+    if (s.includes('ipad') || s.includes('tablet')) return 'tablet';
+    if (s.includes('android')) return 'android';
+    if (s.includes('macintosh')) return 'mac';
+    if (s.includes('windows')) return 'windows';
+    if (s.includes('linux')) return 'linux';
+    return 'desktop';
+}
+
+function json(data, status = 200) {
     return new Response(JSON.stringify(data), {
         status,
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }

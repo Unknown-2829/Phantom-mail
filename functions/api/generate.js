@@ -2,15 +2,17 @@
  * POST /api/generate
  * Generates a human-like temp email address on one of two active domains.
  *
- * Domain assignment:
- *   - Free / logged-out users: domain randomly assigned (unkn0wn OR phant0m)
- *   - Premium users: can specify ?domain=unkn0wn.qzz.io or ?domain=phant0m.qzz.io
+ * Domain selection (all tiers):
+ *   - Preferred domain from request body: { domain: 'unkn0wn.qzz.io' } OR ?domain= query param
+ *   - Falls back to random domain selection if none specified or domain is invalid
+ *   - ALL users (including anonymous) can pick a domain preference
  *
  * Features:
  *   - SHA-256 dedup in INBOX_META (1hr TTL) — no plain-text address stored
  *   - Immediate purge of previous temp address data if user generates a new one
- *   - IP-based rate limiting: 30 generations/day for unauthenticated users
- *   - Authenticated users: unlimited generations
+ *   - IP-based rate limiting: 50 generations/day for unauthenticated users
+ *   - Authenticated users: 200 generations/day
+ *   - Session updated with current address + preferred domain
  */
 
 // ─── Domain Config ───────────────────────────────────────────────────────────
@@ -167,24 +169,47 @@ export async function onRequestPost(context) {
             }
         }
 
-        // ── IP Rate limit (unauthenticated only) ─────────────────────────────
+        // ── IP Rate limit ─────────────────────────────────────────────────────
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
         if (!isAuthenticated) {
-            const ip    = request.headers.get('CF-Connecting-IP') || 'unknown';
-            const today = new Date().toISOString().slice(0, 10);
-            const rlKey = `ratelimit:gen:${ip}:${today}`;
-            const count = parseInt((await env.EMAILS.get(rlKey)) || '0', 10);
-            if (count >= 30) {
-                return jsonResponse({ error: 'Rate limit exceeded. Try again tomorrow.' }, 429);
+            const today  = new Date().toISOString().slice(0, 10);
+            const rlKey  = `ratelimit:gen:${ip}:${today}`;
+            const count  = parseInt((await env.EMAILS.get(rlKey)) || '0', 10);
+            const rlLimit = 50; // 50/day for anonymous users
+            if (count >= rlLimit) {
+                return jsonResponse({ error: 'Rate limit exceeded. Try again tomorrow or sign up for more.' }, 429, {
+                    'X-RateLimit-Limit':     String(rlLimit),
+                    'X-RateLimit-Remaining': '0'
+                });
+            }
+            await env.EMAILS.put(rlKey, String(count + 1), { expirationTtl: 86400 });
+        } else {
+            // Authenticated: 200/day rate limit
+            const today  = new Date().toISOString().slice(0, 10);
+            const rlKey  = `ratelimit:gen:auth:${ip}:${today}`;
+            const count  = parseInt((await env.EMAILS.get(rlKey)) || '0', 10);
+            if (count >= 200) {
+                return jsonResponse({ error: 'Daily generation limit reached.' }, 429);
             }
             await env.EMAILS.put(rlKey, String(count + 1), { expirationTtl: 86400 });
         }
 
         // ── Domain selection ─────────────────────────────────────────────────
-        // Premium users can choose via ?domain= param; free users get random
+        // Accept domain from JSON body OR query string — all users can specify preference
+        let bodyDomain;
+        try {
+            const cloned = request.clone();
+            const ct = request.headers.get('Content-Type') || '';
+            if (ct.includes('application/json')) {
+                const bodyObj = await cloned.json().catch(() => ({}));
+                bodyDomain = bodyObj.domain;
+            }
+        } catch (_) {}
+
+        const requestedDomain = bodyDomain || url.searchParams.get('domain');
         let chosenDomain;
-        const requestedDomain = url.searchParams.get('domain');
-        if (isPremium && requestedDomain && ALLOWED_DOMAINS.includes(requestedDomain)) {
-            chosenDomain = requestedDomain;
+        if (requestedDomain && ALLOWED_DOMAINS.includes(requestedDomain)) {
+            chosenDomain = requestedDomain; // all users can prefer a domain
         } else {
             chosenDomain = ALLOWED_DOMAINS[Math.floor(Math.random() * ALLOWED_DOMAINS.length)];
         }
@@ -230,19 +255,26 @@ export async function onRequestPost(context) {
         const emailHash = await sha256Hex(email);
         await env.INBOX_META.put(`dedup:${emailHash}`, '1', { expirationTtl: FREE_TTL_SEC });
 
-        // ── Update session with current address ───────────────────────────────
+        // ── Update session with current address + preferred domain ──────────
         if (token && sessionData) {
-            sessionData.currentAddress = email;
+            sessionData.currentAddress   = email;
+            sessionData.preferredDomain  = chosenDomain;
+            sessionData.lastGeneratedAt  = Date.now();
             await env.EMAILS.put(`session:${token}`, JSON.stringify(sessionData), {
-                expirationTtl: 7 * 86400 // preserve 7-day session TTL
+                expirationTtl: 7 * 86400
             });
         }
 
         return jsonResponse({
             email,
-            domain: chosenDomain,
-            expiresIn: FREE_TTL_SEC,
-            isTemp: !isPremium
+            domain:      chosenDomain,
+            expiresIn:   FREE_TTL_SEC,
+            isTemp:      !isPremium,
+            isPremium,
+            rateLimit: {
+                limit:     isAuthenticated ? 200 : 50,
+                window:    '24h'
+            }
         });
 
     } catch (error) {
@@ -261,13 +293,14 @@ export async function onRequestOptions() {
     });
 }
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, extraHeaders = {}) {
     return new Response(JSON.stringify(data), {
         status,
         headers: {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*',
-            'Cache-Control': 'no-store'
+            'Cache-Control': 'no-store',
+            ...extraHeaders
         }
     });
 }

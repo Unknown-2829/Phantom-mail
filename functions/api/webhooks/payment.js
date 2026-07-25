@@ -3,32 +3,40 @@
  * POST /api/webhooks/payment
  *
  * Flow:
- *   1. NOWPayments calls this URL when a payment status changes.
- *   2. We verify HMAC-SHA512 signature using IPN_SECRET_KEY.
- *   3. On 'finished' status → upgrade user to premium for 30 days.
- *   4. On 'partially_paid' → log it (don't grant premium).
- *   5. On 'failed'/'expired' → mark payment failed in KV.
+ *   1. NOWPayments calls this URL on every payment status change.
+ *   2. HMAC-SHA512 IPN signature verified before processing.
+ *   3. order_id format: "user:username:planId:timestamp"
+ *      (e.g. "user:alice:monthly:1753476789000")
+ *   4. On 'finished':
+ *      a. Find user by order_id → paymentLookup index → payment record
+ *      b. Grant premium for correct plan duration (monthly=30d, annual=365d)
+ *      c. Upgrade API key to pm_pro_ prefix
+ *      d. Clear pending-payment guard in KV
+ *      e. Increment analytics
+ *   5. On 'partially_paid' → log only (no premium)
+ *   6. On 'failed'/'expired' → mark record + clear pending guard
+ *   7. On 'waiting'/'confirming'/'confirmed' → update status only
  *
- * Required env (secret):
- *   NOWPAYMENTS_IPN_SECRET — from NOWPayments dashboard → IPN settings
- *
- * Docs: https://documenter.getpostman.com/view/7907941/2s93JqTRWN
+ * Required env: NOWPAYMENTS_IPN_SECRET
  */
 
-const PREMIUM_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const PLAN_DAYS = {
+    monthly: 30,
+    annual:  365
+};
 
 export async function onRequestPost(context) {
     const { request, env } = context;
 
     try {
-        const rawBody  = await request.text();
-        const ipnSig   = request.headers.get('x-nowpayments-sig');
+        const rawBody = await request.text();
+        const ipnSig  = request.headers.get('x-nowpayments-sig');
 
-        // Always verify IPN signature if secret is set
+        // ── Signature verification ─────────────────────────────────────────────
         if (env.NOWPAYMENTS_IPN_SECRET) {
             const isValid = await verifyNowPaymentsSig(env.NOWPAYMENTS_IPN_SECRET, rawBody, ipnSig);
             if (!isValid) {
-                console.error('[payment webhook] Invalid IPN signature');
+                console.error('[webhook/payment] Invalid IPN signature');
                 return new Response('Forbidden', { status: 403 });
             }
         }
@@ -40,100 +48,238 @@ export async function onRequestPost(context) {
         const {
             payment_id,
             payment_status,
-            pay_amount,
+            order_id,     // format: "user:username:planId:timestamp"
+            actually_paid,
             pay_currency,
-            price_amount,
-            price_currency,
-            order_id,      // our custom metadata: "user:username"
-            order_description
+            price_amount
         } = payload;
 
         if (!payment_id || !payment_status) {
             return new Response('Bad Request', { status: 400 });
         }
 
-        // Store raw payment event in KV for audit trail
-        const paymentKey = `payment:${payment_id}`;
-        await env.EMAILS.put(paymentKey, JSON.stringify({
-            ...payload,
-            receivedAt: Date.now()
-        }), { expirationTtl: 90 * 86400 }); // 90-day audit trail
+        // ── Parse order_id → userKey + planId ──────────────────────────────────
+        // order_id = "user:alice:monthly:1753476789000"
+        // Split on ':' → ["user", "alice", "monthly", "1753476789000"]
+        let userKey = null;
+        let planId  = 'monthly';
 
-        // Track analytics
-        if (env.INBOX_META) {
-            const day = new Date().toISOString().slice(0, 10);
-            const cur = parseInt((await env.INBOX_META.get(`analytics:payments:${day}`)) || '0', 10);
-            await env.INBOX_META.put(`analytics:payments:${day}`, String(cur + 1), { expirationTtl: 400 * 86400 });
+        if (order_id) {
+            const parts = order_id.split(':');
+            // Reconstruct userKey (always "user:<username>")
+            if (parts[0] === 'user' && parts.length >= 3) {
+                userKey = `user:${parts[1]}`;
+                planId  = parts[2] || 'monthly';
+            } else if (order_id.startsWith('user:')) {
+                // Legacy format: "user:username"
+                userKey = order_id;
+            }
         }
 
-        if (payment_status === 'finished') {
-            // Grant premium to user identified by order_id
-            if (order_id && order_id.startsWith('user:')) {
-                const userKey = order_id; // e.g. "user:alice"
-                const user    = await env.EMAILS.get(userKey, { type: 'json' });
-                if (user) {
-                    const now    = Date.now();
-                    const expiry = now + PREMIUM_DURATION_MS;
+        // ── Store / update payment audit record in KV ───────────────────────────
+        const paymentKey = `payment:${payment_id}`;
+        const existing   = await env.EMAILS.get(paymentKey, { type: 'json' }).catch(() => ({}));
+        await env.EMAILS.put(paymentKey, JSON.stringify({
+            ...existing,
+            ...payload,
+            updatedAt:     Date.now(),
+            status:        payment_status,
+            parsedUserKey: userKey,
+            parsedPlanId:  planId
+        }), { expirationTtl: 90 * 86400 });
 
-                    user.isPremium    = true;
-                    user.premiumExpiry = expiry;
-                    user.plan         = 'pro';
-                    user.lastPaymentId = payment_id;
-                    user.lastPaymentAt = now;
+        // ── Analytics counter ───────────────────────────────────────────────────
+        if (env.INBOX_META) {
+            const day = new Date().toISOString().slice(0, 10);
+            const cur = parseInt((await env.INBOX_META.get(`analytics:payments:${payment_status}:${day}`)) || '0', 10);
+            await env.INBOX_META.put(
+                `analytics:payments:${payment_status}:${day}`,
+                String(cur + 1),
+                { expirationTtl: 400 * 86400 }
+            );
+        }
 
-                    await env.EMAILS.put(userKey, JSON.stringify(user));
+        // ── Handle status ────────────────────────────────────────────────────────
+        switch (payment_status) {
 
-                    // Upgrade API key plan in API_KEYS namespace
-                    if (user.apiKey && env.API_KEYS) {
-                        const keyData = await env.API_KEYS.get(user.apiKey, { type: 'json' }).catch(() => null);
+            case 'finished': {
+                if (!userKey) {
+                    console.error(`[webhook/payment] finished but no userKey from order_id="${order_id}"`);
+                    break;
+                }
+
+                const user = await env.EMAILS.get(userKey, { type: 'json' }).catch(() => null);
+                if (!user) {
+                    console.error(`[webhook/payment] user not found: ${userKey}`);
+                    break;
+                }
+
+                const now       = Date.now();
+                const planDays  = PLAN_DAYS[planId] || 30;
+                const planMs    = planDays * 24 * 60 * 60 * 1000;
+
+                // Stack on top of existing premium (don't reset if already active)
+                const baseExpiry = (user.premiumExpiry && user.premiumExpiry > now)
+                    ? user.premiumExpiry
+                    : now;
+                const newExpiry = baseExpiry + planMs;
+
+                user.isPremium     = true;
+                user.premiumExpiry = newExpiry;
+                user.plan          = 'pro';
+                user.lastPaymentId = payment_id;
+                user.lastPaymentAt = now;
+                user.lastPaymentPlan = planId;
+
+                await env.EMAILS.put(userKey, JSON.stringify(user));
+
+                // ── Upgrade API key to pm_pro_ prefix ─────────────────────────
+                if (env.API_KEYS && user.apiKey) {
+                    const oldKey    = user.apiKey;
+                    const isAlready = oldKey.startsWith('pm_pro_');
+
+                    if (!isAlready) {
+                        // Generate new pro key
+                        const proKey = 'pm_pro_' + Array.from(crypto.getRandomValues(new Uint8Array(16)))
+                            .map(b => b.toString(16).padStart(2, '0')).join('');
+
+                        // Grace period for old free key (24h)
+                        const oldMeta = await env.API_KEYS.get(oldKey, { type: 'json' }).catch(() => null);
+                        if (oldMeta) {
+                            await env.API_KEYS.put(`apikey:grace:${oldKey}`, JSON.stringify({
+                                ...oldMeta, grace: true, gracedAt: now, replacedBy: proKey
+                            }), { expirationTtl: 86400 });
+                        }
+                        await env.API_KEYS.delete(oldKey).catch(() => {});
+
+                        await env.API_KEYS.put(proKey, JSON.stringify({
+                            key: proKey, userId: userKey, plan: 'pro',
+                            createdAt: now, usedToday: 0, lastUsed: null
+                        }));
+
+                        user.apiKey = proKey;
+                        user.apiKeyCreatedAt = now;
+                        await env.EMAILS.put(userKey, JSON.stringify(user));
+                    } else {
+                        // Already pro key — just sync plan field
+                        const keyData = await env.API_KEYS.get(oldKey, { type: 'json' }).catch(() => null);
                         if (keyData) {
                             keyData.plan = 'pro';
-                            await env.API_KEYS.put(user.apiKey, JSON.stringify(keyData));
+                            await env.API_KEYS.put(oldKey, JSON.stringify(keyData)).catch(() => {});
                         }
                     }
-
-                    console.log(`[payment] Upgraded ${userKey} to premium until ${new Date(expiry).toISOString()}`);
                 }
+
+                // ── Clear pending payment guard ────────────────────────────────
+                await env.EMAILS.delete(`payment:pending:${userKey}`).catch(() => {});
+
+                // ── Pusher: notify user their payment is confirmed ─────────────
+                if (env.PUSHER_APP_ID && env.PUSHER_KEY && env.PUSHER_SECRET) {
+                    context.waitUntil(pushPaymentConfirmed(env, userKey, planId, newExpiry));
+                }
+
+                console.log(`[webhook/payment] ✅ Upgraded ${userKey} → pro (${planDays}d, expires ${new Date(newExpiry).toISOString()})`);
+                break;
             }
-        } else if (payment_status === 'failed' || payment_status === 'expired') {
-            // Update payment record with final failure status
-            const rec = await env.EMAILS.get(paymentKey, { type: 'json' }).catch(() => ({}));
-            rec.failedAt = Date.now();
-            rec.finalStatus = payment_status;
-            await env.EMAILS.put(paymentKey, JSON.stringify(rec), { expirationTtl: 90 * 86400 });
+
+            case 'partially_paid': {
+                console.log(`[webhook/payment] partial payment: id=${payment_id} user=${userKey} paid=${actually_paid} ${pay_currency}`);
+                // Store partial amount for user reference — do not grant premium
+                await env.EMAILS.put(paymentKey, JSON.stringify({
+                    ...payload, updatedAt: Date.now(), partialAt: Date.now(),
+                    parsedUserKey: userKey, parsedPlanId: planId
+                }), { expirationTtl: 90 * 86400 });
+                break;
+            }
+
+            case 'failed':
+            case 'expired': {
+                // Clear pending payment guard so user can try again
+                if (userKey) {
+                    await env.EMAILS.delete(`payment:pending:${userKey}`).catch(() => {});
+                }
+                await env.EMAILS.put(paymentKey, JSON.stringify({
+                    ...payload, updatedAt: Date.now(), failedAt: Date.now(), finalStatus: payment_status
+                }), { expirationTtl: 90 * 86400 });
+                console.log(`[webhook/payment] ❌ ${payment_status}: id=${payment_id} user=${userKey}`);
+                break;
+            }
+
+            case 'waiting':
+            case 'confirming':
+            case 'confirmed':
+            case 'sending':
+                // Intermediate states — record updated above; nothing else to do
+                console.log(`[webhook/payment] ⏳ ${payment_status}: id=${payment_id}`);
+                break;
+
+            default:
+                console.log(`[webhook/payment] unknown status: ${payment_status}`);
         }
 
         return new Response('OK', { status: 200 });
 
     } catch (err) {
-        console.error('[webhook/payment] error:', err.message);
+        console.error('[webhook/payment] error:', err.message, err.stack);
         return new Response('Internal Server Error', { status: 500 });
     }
 }
 
+// ── Push Pusher notification to user's private channel ───────────────────────
+async function pushPaymentConfirmed(env, userKey, planId, newExpiry) {
+    try {
+        const cluster   = env.PUSHER_CLUSTER || 'ap2';
+        const channel   = `private-user-${await sha256Short(userKey)}`;
+        const eventBody = JSON.stringify({
+            channel,
+            name:  'payment_confirmed',
+            data:  JSON.stringify({ planId, newExpiry, message: '🎉 Payment confirmed! Welcome to Pro.' })
+        });
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const bodyMd5   = await sha256Short(eventBody); // approximate md5
+        const toSign    = `POST\n/apps/${env.PUSHER_APP_ID}/events\nauth_key=${env.PUSHER_KEY}&auth_timestamp=${timestamp}&auth_version=1.0&body_md5=${bodyMd5}&channel=${channel}&name=payment_confirmed`;
+        const sig       = await hmacSha256Hex(env.PUSHER_SECRET, toSign);
+        const qs        = `auth_key=${env.PUSHER_KEY}&auth_timestamp=${timestamp}&auth_version=1.0&body_md5=${bodyMd5}&auth_signature=${sig}`;
+        await fetch(`https://api-${cluster}.pusher.com/apps/${env.PUSHER_APP_ID}/events?${qs}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: eventBody
+        });
+    } catch (e) {
+        console.warn('[webhook/payment] Pusher notify failed:', e.message);
+    }
+}
+
+// ── Crypto helpers ────────────────────────────────────────────────────────────
+
 async function verifyNowPaymentsSig(secret, body, receivedSig) {
     try {
-        // NOWPayments uses HMAC-SHA512 of the sorted JSON body
         const parsed = JSON.parse(body);
         const sorted = JSON.stringify(sortObjectDeep(parsed));
-
-        const key = await crypto.subtle.importKey(
+        const key    = await crypto.subtle.importKey(
             'raw', new TextEncoder().encode(secret),
             { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']
         );
-        const sigBuf  = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(sorted));
+        const sigBuf   = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(sorted));
         const computed = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
         return constantTimeEqual(computed, receivedSig || '');
     } catch { return false; }
 }
 
+async function hmacSha256Hex(secret, msg) {
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const buf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256Short(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
 function sortObjectDeep(obj) {
     if (typeof obj !== 'object' || obj === null) return obj;
     if (Array.isArray(obj)) return obj.map(sortObjectDeep);
-    return Object.keys(obj).sort().reduce((acc, key) => {
-        acc[key] = sortObjectDeep(obj[key]);
-        return acc;
-    }, {});
+    return Object.keys(obj).sort().reduce((acc, key) => { acc[key] = sortObjectDeep(obj[key]); return acc; }, {});
 }
 
 function constantTimeEqual(a, b) {

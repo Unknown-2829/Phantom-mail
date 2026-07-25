@@ -99,18 +99,25 @@ export async function onRequestPost(context) {
 
             case 'email.bounced':
                 await updateSentRecord(env, emailId, trackingId, {
-                    status: 'bounced',
-                    bouncedAt: Date.now(),
-                    bounceCode: data.bounce?.code || null,
-                    bounceMessage: data.bounce?.message || null
+                    status:        'bounced',
+                    bouncedAt:     Date.now(),
+                    bounceCode:    data.bounce?.code    || null,
+                    bounceMessage: data.bounce?.message || null,
+                    bounceType:    data.bounce?.type    || null  // 'hard' | 'soft'
                 });
                 break;
 
             case 'email.complained':
                 await updateSentRecord(env, emailId, trackingId, {
-                    status: 'complained',
+                    status:       'complained',
                     complainedAt: Date.now()
                 });
+                // Track complaint for suppression monitoring
+                if (env.INBOX_META) {
+                    const complaintKey = `analytics:complaints:${new Date().toISOString().slice(0, 10)}`;
+                    const c = parseInt((await env.INBOX_META.get(complaintKey)) || '0', 10);
+                    await env.INBOX_META.put(complaintKey, String(c + 1), { expirationTtl: 400 * 86400 });
+                }
                 break;
 
             case 'email.suppressed':
@@ -133,21 +140,22 @@ export async function onRequestPost(context) {
             case 'email.opened':
                 await incrementTrackingCounter(env, emailId, trackingId, 'opens', {
                     lastOpenAt:      Date.now(),
-                    lastOpenIp:      data.open?.ipAddress || null,
-                    lastOpenAgent:   data.open?.userAgent || null,
+                    // Hash IP for privacy — never store raw IPs
+                    lastOpenIpHash:  data.open?.ipAddress ? await sha256Short(data.open.ipAddress) : null,
+                    lastOpenAgent:   parseDevice(data.open?.userAgent || ''),
                     lastOpenCity:    data.open?.city      || null,
                     lastOpenCountry: data.open?.country   || null
-                });
+                }, data.open?.ipAddress || null);
                 break;
 
             case 'email.clicked':
                 await incrementTrackingCounter(env, emailId, trackingId, 'clicks', {
                     lastClickAt:      Date.now(),
-                    lastClickIp:      data.click?.ipAddress || null,
+                    lastClickIpHash:  data.click?.ipAddress ? await sha256Short(data.click.ipAddress) : null,
                     lastClickLink:    data.click?.link      || null,
                     lastClickCity:    data.click?.city      || null,
                     lastClickCountry: data.click?.country   || null
-                });
+                }, data.click?.ipAddress || null);
                 break;
 
             // ── Inbound ───────────────────────────────────────────
@@ -180,6 +188,11 @@ export async function onRequestPost(context) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+async function sha256Short(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
 async function updateSentRecord(env, emailId, trackingId, updates) {
     // Primary: look up by Resend email ID
     let sentKey = await env.EMAILS.get(`sentid:${emailId}`).catch(() => null);
@@ -200,7 +213,7 @@ async function updateSentRecord(env, emailId, trackingId, updates) {
     await env.EMAILS.put(sentKey, JSON.stringify(record)).catch(() => {});
 }
 
-async function incrementTrackingCounter(env, emailId, trackingId, field, extraFields) {
+async function incrementTrackingCounter(env, emailId, trackingId, field, extraFields, rawIp = null) {
     // Primary: look up by Resend email ID
     let sentKey = await env.EMAILS.get(`sentid:${emailId}`).catch(() => null);
 
@@ -216,17 +229,19 @@ async function incrementTrackingCounter(env, emailId, trackingId, field, extraFi
     // ── Total counter ──────────────────────────────────────────
     record[field] = (record[field] || 0) + 1;
 
-    // ── Unique counter (IP deduplication) ────────────────────────
-    const ip       = extraFields[field === 'opens' ? 'lastOpenIp' : 'lastClickIp'] || null;
-    const ipSetKey = field === 'opens' ? 'openIps' : 'clickIps';
-    const ips      = Array.isArray(record[ipSetKey]) ? record[ipSetKey] : [];
-    const isUnique = ip && !ips.includes(ip);
-    if (isUnique) {
-        ips.push(ip);
-        if (ips.length > 20) ips.shift(); // keep max 20 IPs
-        record[ipSetKey] = ips;
-        const uniqueField = field === 'opens' ? 'uniqueOpens' : 'uniqueClicks';
-        record[uniqueField] = (record[uniqueField] || 0) + 1;
+    // ── Unique counter (IP hash deduplication) ────────────────────
+    if (rawIp) {
+        const ipHash   = await sha256Short(rawIp);
+        const hashField = field === 'opens' ? 'openIpHashes' : 'clickIpHashes';
+        const hashes    = Array.isArray(record[hashField]) ? record[hashField] : [];
+        const isUnique  = !hashes.includes(ipHash);
+        if (isUnique) {
+            hashes.push(ipHash);
+            if (hashes.length > 200) hashes.splice(0, hashes.length - 200);
+            record[hashField]  = hashes;
+            const uniqueField  = field === 'opens' ? 'uniqueOpens' : 'uniqueClicks';
+            record[uniqueField] = (record[uniqueField] || 0) + 1;
+        }
     }
 
     // ── Per-link click breakdown ───────────────────────────────
@@ -239,11 +254,14 @@ async function incrementTrackingCounter(env, emailId, trackingId, field, extraFi
 
     // ── Device / client type (opens only) ──────────────────────
     if (field === 'opens' && extraFields.lastOpenAgent) {
-        extraFields.lastOpenDevice = parseDevice(extraFields.lastOpenAgent);
+        extraFields.lastOpenAgent = extraFields.lastOpenAgent; // already parsed to device string
     }
 
     // ── Apply snapshot fields ──────────────────────────────────
     Object.assign(record, extraFields);
+    // Never persist raw IP — remove any raw IP fields before saving
+    delete record.lastOpenIp;
+    delete record.lastClickIp;
     await env.EMAILS.put(sentKey, JSON.stringify(record)).catch(() => {});
 }
 

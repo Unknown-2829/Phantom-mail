@@ -1,6 +1,45 @@
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' https://js.pusher.com https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src * data: blob:; connect-src 'self' https://mail.unknowns.app https://api.pusher.com https://sockjs-ap2.pusher.com https://api-ap2.pusher.com https://resend.com https://api.resend.com wss://ws-ap2.pusher.com wss://*.pusher.com; frame-src 'none'; object-src 'none'; worker-src blob: 'self'; base-uri 'self'
+  ┌────────────────────────────────────────────────────────────────────────────┐
+  │  Phantom Mail — Security Headers                                            │
+  │  Applied to ALL routes via Cloudflare Pages _headers file                   │
+  │                                                                             │
+  │  CSP connect-src covers:                                                    │
+  │    - unkn0wn.qzz.io / phant0m.qzz.io  (our APIs)                          │
+  │    - track.unkn0wn.qzz.io             (open pixel + click redirect)        │
+  │    - Pusher (ap2 cluster, ws + http)                                        │
+  │    - Cloudflare Insights                                                    │
+  │    - NOWPayments                                                            │
+  │    - Resend (API only — called server-side, but frontend may check status)  │
+  └────────────────────────────────────────────────────────────────────────────┘
+*/
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://js.pusher.com https://static.cloudflareinsights.com; script-src-attr 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src * data: blob: https://track.unkn0wn.qzz.io; connect-src 'self' https://unkn0wn.qzz.io https://phant0m.qzz.io https://track.unkn0wn.qzz.io https://api.pusher.com https://sockjs-ap2.pusher.com https://api-ap2.pusher.com wss://ws-ap2.pusher.com wss://*.pusher.com https://api.nowpayments.io https://beacon.cloudflareinsights.com; frame-src 'none'; object-src 'none'; worker-src blob: 'self'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
+  X-XSS-Protection: 1; mode=block
   Referrer-Policy: strict-origin-when-cross-origin
-  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-site
+  Cross-Origin-Embedder-Policy: credentialless
+  X-DNS-Prefetch-Control: off
+
+/api/*
+  Cache-Control: no-store, no-cache, must-revalidate
+  Pragma: no-cache
+
+/api/track*
+  Cache-Control: no-cache, no-store, must-revalidate
+  Pragma: no-cache
+  Expires: 0
+
+/*.js
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/*.css
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/index.html
+  Cache-Control: no-cache, must-revalidate

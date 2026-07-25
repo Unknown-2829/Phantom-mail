@@ -14,9 +14,12 @@
  */
 
 const PLANS = {
-    monthly: { priceUSD: 5,  days: 30,  label: 'Phantom Mail Premium — 1 Month'  },
-    annual:  { priceUSD: 40, days: 365, label: 'Phantom Mail Premium — 1 Year'   }
+    monthly: { priceUSD: 5,  days: 30,  label: 'Phantom Mail Pro — 1 Month' },
+    annual:  { priceUSD: 40, days: 365, label: 'Phantom Mail Pro — 1 Year'  }
 };
+
+const ALLOWED_CURRENCIES = ['ltc','eth','bnb','trx','usdt','btc','sol','doge','matic'];
+const DEFAULT_CURRENCY   = 'ltc';
 
 export async function onRequestPost(context) {
     const { request, env } = context;
@@ -40,6 +43,16 @@ export async function onRequestPost(context) {
             }, 409);
         }
 
+        // ── Check for already-pending payment (prevent double invoices) ────────
+        const pendingKey = `payment:pending:${session.username}`;
+        const existing   = await env.EMAILS.get(pendingKey, { type: 'json' }).catch(() => null);
+        if (existing && existing.expiresAt && existing.expiresAt > Date.now()) {
+            return jsonResponse({
+                error: 'You have a pending payment. Complete or wait for it to expire before creating a new one.',
+                existing: { paymentId: existing.paymentId, expiresAt: existing.expiresAt }
+            }, 409);
+        }
+
         // ── Validate plan ────────────────────────────────────────────────────
         let body;
         try { body = await request.json(); } catch { return jsonResponse({ error: 'Invalid request body' }, 400); }
@@ -49,6 +62,10 @@ export async function onRequestPost(context) {
         if (!plan) {
             return jsonResponse({ error: `Invalid plan. Must be: ${Object.keys(PLANS).join(' | ')}` }, 400);
         }
+
+        // Validate currency
+        const requestedCurrency = (body.currency || DEFAULT_CURRENCY).toLowerCase();
+        const currency = ALLOWED_CURRENCIES.includes(requestedCurrency) ? requestedCurrency : DEFAULT_CURRENCY;
 
         // ── NOWPayments API ──────────────────────────────────────────────────
         if (!env.NOWPAYMENTS_API_KEY) {
@@ -62,13 +79,13 @@ export async function onRequestPost(context) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                price_amount:   plan.priceUSD,
-                price_currency: 'usd',
-                pay_currency:   body.currency || 'ltc', // default to LTC (fast, cheap)
-                order_id:       session.username,       // used by webhook to find user
+                price_amount:    plan.priceUSD,
+                price_currency:  'usd',
+                pay_currency:    currency,
+                order_id:        `${session.username}:${planId}:${Date.now()}`,
                 order_description: plan.label,
-                ipn_callback_url: env.NOWPAYMENTS_IPN_URL || 'https://mail.unknowns.app/api/webhooks/payment',
-                is_fixed_rate:  false,
+                ipn_callback_url:  env.NOWPAYMENTS_IPN_URL || 'https://unkn0wn.qzz.io/api/webhooks/payment',
+                is_fixed_rate:     false,
                 is_fee_paid_by_user: false
             })
         });
@@ -81,14 +98,34 @@ export async function onRequestPost(context) {
         }
 
         // ── Store pending payment in KV ──────────────────────────────────────
-        await env.EMAILS.put(`payment:${paymentData.payment_id}`, JSON.stringify({
+        const payRecord = {
             ...paymentData,
-            userId: session.username,
+            userId:    session.username,
             planId,
-            planDays: plan.days,
+            planDays:  plan.days,
+            currency,
             createdAt: Date.now(),
-            status: 'waiting'
+            status:    'waiting',
+            // For webhook lookup
+            tags: { planId, userId: session.username }
+        };
+
+        // Primary payment record (90-day TTL)
+        await env.EMAILS.put(`payment:${paymentData.payment_id}`, JSON.stringify(payRecord), { expirationTtl: 90 * 86400 });
+
+        // Lookup index: userId → paymentId (for webhook to find user quickly)
+        await env.EMAILS.put(`paymentLookup:${session.username}:${paymentData.payment_id}`, JSON.stringify({
+            paymentId: paymentData.payment_id,
+            planId,
+            createdAt: Date.now()
         }), { expirationTtl: 90 * 86400 });
+
+        // Pending-payment guard (1hr TTL — NOWPayments invoice expiry)
+        await env.EMAILS.put(pendingKey, JSON.stringify({
+            paymentId:  paymentData.payment_id,
+            planId,
+            expiresAt:  Date.now() + 3600 * 1000
+        }), { expirationTtl: 3600 });
 
         return jsonResponse({
             success: true,
@@ -100,10 +137,11 @@ export async function onRequestPost(context) {
             priceCurrency: paymentData.price_currency,
             status:        paymentData.payment_status,
             expiresAt:     paymentData.expiration_estimate_date || null,
+            qrCode:        `https://api.nowpayments.io/v1/payment/${paymentData.payment_id}/qr`,
             plan: {
-                id:     planId,
-                label:  plan.label,
-                days:   plan.days,
+                id:       planId,
+                label:    plan.label,
+                days:     plan.days,
                 priceUSD: plan.priceUSD
             }
         });
