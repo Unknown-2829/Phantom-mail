@@ -4,6 +4,11 @@
  * Supported from domains: @unkn0wn.qzz.io, @phant0m.qzz.io
  * Rate limits: Free = 3/day | Premium = 25/day
  * Required env: RESEND_API_KEY (secret), RESEND_QUOTA_LIMIT (plain, default 3000)
+ *
+ * Phase 2: Custom tracking via track.unkn0wn.qzz.io
+ *   - Resend tags.trackingId passed in every email so webhook can resolve the KV record
+ *   - sentid:{resendEmailId} → sentKey stored for direct webhook lookup
+ *   - status field: 'sent' → 'delivered' | 'bounced' updated by webhooks/resend.js
  */
 
 /**
@@ -206,22 +211,24 @@ export async function onRequestPost(context) {
 
   const phantomFooterText = `\n\n---\nSent via Phantom Mail (https://mail.unknowns.app)\nDeveloper: @Unknown (https://t.me/unknownlll2829)`;
 
-  // ── Generate tracking pixel ───────────────────────────────────
-  const trackingId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-  const trackingPixel = `<img width="1" height="1" src="https://mail.unknowns.app/api/track?id=${trackingId}&event=open" style="display:none;" />`;
+  // ── Tracking ID (used by Resend webhook to find this record) ────
+  const trackingId = crypto.randomUUID().replace(/-/g, '');
+
+  // NOTE: Open/click tracking is handled natively by Resend via
+  // track.unkn0wn.qzz.io — no manual pixel needed. Resend injects
+  // a 1x1 pixel and rewrites links automatically on that domain.
 
   // ── Compose final email ───────────────────────────────────────
   let finalHtml = null;
   let finalText = null;
 
   if (isHtml) {
-    finalHtml = emailBody + phantomFooterHtml + trackingPixel;
+    finalHtml = emailBody + phantomFooterHtml;
   } else {
-    // Convert plain text to basic HTML for tracking pixel support
     const escaped = emailBody
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/\n/g, '<br>');
-    finalHtml = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">${escaped}</div>${phantomFooterHtml}${trackingPixel}`;
+    finalHtml = `<div style="font-family:Arial,sans-serif;font-size:15px;line-height:1.6;">${escaped}</div>${phantomFooterHtml}`;
     finalText = emailBody + phantomFooterText;
   }
 
@@ -243,7 +250,14 @@ export async function onRequestPost(context) {
     headers: {
       'X-Mailer': 'Phantom Mail (https://mail.unknowns.app)',
       'X-Tracking-ID': trackingId
-    }
+    },
+    // Resend tags — returned verbatim in every webhook event payload
+    // webhooks/resend.js reads data.tags.trackingId to resolve the KV record
+    tags: [
+      { name: 'trackingId', value: trackingId },
+      { name: 'from',       value: from.replace('@', '_') }, // Resend tag values: no @ allowed
+      { name: 'source',     value: 'phantom-mail' }
+    ]
   };
 
   let resendResult;
@@ -269,21 +283,47 @@ export async function onRequestPost(context) {
   // ── Store sent email record + tracking init ───────────────────
   const sentKey = `sent:${from}:${Date.now()}`;
   const sentRecord = {
-    id: resendResult.id,
+    id:            resendResult.id,   // Resend email ID
     trackingId,
     from,
-    to: recipients,
+    to:            recipients,
     subject,
-    body: emailBody.slice(0, 10000), // store up to 10 KB for preview/display
+    body:          emailBody.slice(0, 10000),
     isHtml,
-    sentAt: Date.now(),
-    opens: 0,
-    lastOpenAt: null,
-    lastOpenIp: null,
-    lastOpenAgent: null
+    sentAt:        Date.now(),
+    status:        'sent',
+    // Delivery
+    deliveredAt:   null,
+    bouncedAt:     null,
+    failedAt:      null,
+    delayedAt:     null,
+    // Engagement (via track.unkn0wn.qzz.io)
+    opens:         0,         // total open events
+    uniqueOpens:   0,         // distinct IPs that opened
+    clicks:        0,         // total click events
+    uniqueClicks:  0,         // distinct IPs that clicked
+    clickLinks:    {},        // { url: count } per-link breakdown
+    openIps:       [],        // dedupe set (max 20 IPs stored)
+    clickIps:      [],        // dedupe set (max 20 IPs stored)
+    // Last-event snapshots
+    lastOpenAt:      null,
+    lastOpenIp:      null,
+    lastOpenAgent:   null,
+    lastOpenCity:    null,
+    lastOpenCountry: null,
+    lastClickAt:     null,
+    lastClickIp:     null,
+    lastClickLink:   null,
+    lastClickCity:   null,
+    lastClickCountry: null
   };
   await env.EMAILS.put(sentKey, JSON.stringify(sentRecord), {
-    expirationTtl: 15 * 24 * 3600 // keep for 15 days
+    expirationTtl: 15 * 24 * 3600
+  });
+
+  // Index: Resend email ID → sentKey (webhook lookup by email.id)
+  await env.EMAILS.put(`sentid:${resendResult.id}`, sentKey, {
+    expirationTtl: 15 * 24 * 3600
   });
 
   if (username) {
