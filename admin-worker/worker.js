@@ -341,8 +341,22 @@ async function requireAuth(request, env, clientIp) {
 
     let session;
     try { session = JSON.parse(sessionStr); } catch { session = null; }
-    if (!session || session.ip !== clientIp) {
-        return { error: json(env, { error: 'Session IP mismatch. Re-authentication required.' }, 401) };
+    if (!session) {
+        return { error: json(env, { error: 'Session expired. Please log in again.' }, 401) };
+    }
+    // Session IP binding is defense-in-depth on top of the random 48-byte token +
+    // password + TOTP. Hard-binding breaks mobile/dynamic-IP admins (IP shifts every
+    // few minutes -> constant re-login). Default: SOFT (allow, but the new IP is
+    // recorded on the session for audit). Set ADMIN_STRICT_SESSION_IP="true" only if
+    // the operator has a static IP and wants hard binding.
+    if (session.ip !== clientIp) {
+        if (env.ADMIN_STRICT_SESSION_IP === 'true') {
+            return { error: json(env, { error: 'Session IP mismatch. Re-authentication required.' }, 401) };
+        }
+        // Soft mode: accept, but note the roaming IP on the session (best-effort, non-blocking).
+        session.ip = clientIp;
+        session.lastSeenIps = Array.from(new Set([...(session.lastSeenIps || []), clientIp])).slice(-8);
+        try { await env.INBOX_META.put(`admin_session:${token}`, JSON.stringify(session), { expirationTtl: 7200 }); } catch { /* non-fatal */ }
     }
     return { token, session };
 }
