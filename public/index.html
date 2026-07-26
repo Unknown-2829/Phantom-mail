@@ -686,7 +686,7 @@
 
   <!-- ─── Compose FAB (desktop) — inline position is the source of truth ─── -->
   <button class="compose-fab" id="compose-fab" onclick="openCompose()" title="Compose" aria-label="Compose"
-    style="position:fixed;bottom:24px;right:24px;z-index:99999;display:inline-flex;align-items:center;">
+    style="position:fixed;bottom:24px;right:24px;z-index:var(--z-fab);display:inline-flex;align-items:center;">
     <svg class="compose-fab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <path d="M12 20h9"/>
       <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
@@ -695,7 +695,7 @@
   </button>
 
   <!-- ─── Compose window — structure and inline hooks are the app.js drag contract ─── -->
-  <div class="compose-window" id="compose-modal" style="display:none;position:fixed;bottom:0;right:24px;z-index:99998;">
+  <div class="compose-window" id="compose-modal" style="display:none;position:fixed;bottom:0;right:24px;z-index:var(--z-compose);">
     <!-- Drag-handle pill (app.js locates it via its inline border-radius style) -->
     <div style="display:flex;justify-content:center;padding:10px 0 4px;flex-shrink:0;cursor:pointer;" onclick="toggleComposeMinimize()">
       <div style="width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,0.15);"></div>

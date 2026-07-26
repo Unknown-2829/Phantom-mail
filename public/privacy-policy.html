@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#00d09c">
+  <meta name="theme-color" content="#07080f">
+  <meta name="color-scheme" content="dark">
   <meta name="robots" content="index, follow">
   <title>Privacy Policy - Phantom Mail</title>
   <meta name="description" content="Privacy Policy for Phantom Mail — learn how we handle your data with full transparency. We collect minimal data, never share it, and respect your anonymity.">
@@ -46,128 +47,189 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@500&display=swap"
+    rel="stylesheet">
   <style>
+    /* ═══ Phantom Dark — legal document theme ═══ */
+    :root {
+      --bg: #07080f;
+      --surface: #0d1117;
+      --surface-2: #161b22;
+      --panel: rgba(255,255,255,0.03);
+      --border: rgba(255,255,255,0.08);
+      --accent: #00e5b3;
+      --accent-dim: #00b894;
+      --accent-glow: rgba(0,229,179,0.12);
+      --violet: #7c5cfc;
+      --amber: #ffb703;
+      --danger: #f04438;
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+      --radius: 12px;
+      --radius-lg: 16px;
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-display: 'Space Grotesk', 'Inter', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
-      font-family: 'Inter', sans-serif;
-      background: #0d0d1a;
-      color: #e0e0e0;
-      line-height: 1.6;
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
     }
 
     .header {
-      background: rgba(13,13,26,0.95);
-      border-bottom: 1px solid rgba(255,255,255,0.08);
+      background: rgba(7,8,15,0.85);
+      border-bottom: 1px solid var(--border);
       padding: 16px 24px;
       position: sticky;
       top: 0;
       z-index: 100;
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(20px) saturate(140%);
+      -webkit-backdrop-filter: blur(20px) saturate(140%);
     }
 
     .logo {
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 8px;
       text-decoration: none;
-      color: #fff;
+      color: var(--text);
+      font-family: var(--font-display);
       font-size: 18px;
       font-weight: 700;
+      letter-spacing: -0.01em;
     }
 
     .logo-icon { font-size: 24px; }
-    .logo-mail { color: #00d09c; }
+    .logo-mail { color: var(--accent); text-shadow: 0 0 18px var(--accent-glow); }
 
     .container {
-      max-width: 800px;
+      max-width: 760px;
       margin: 0 auto;
-      padding: 40px 20px;
+      padding: 48px 24px 72px;
     }
 
+    .back-top {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-dim);
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      margin-bottom: 28px;
+      transition: color 0.2s ease;
+    }
+
+    .back-top:hover { color: var(--accent); }
+
     h1 {
-      font-size: 36px;
-      font-weight: 800;
+      font-family: var(--font-display);
+      font-size: 38px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
       margin-bottom: 10px;
-      color: #fff;
+      color: var(--text);
     }
 
     .last-updated {
-      color: #888;
+      color: var(--text-muted);
       font-size: 14px;
-      margin-bottom: 30px;
+      margin-bottom: 32px;
     }
 
     h2 {
+      font-family: var(--font-display);
       font-size: 24px;
-      font-weight: 700;
-      margin-top: 32px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-top: 40px;
       margin-bottom: 12px;
-      color: #00d09c;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      color: var(--accent);
     }
 
     h3 {
+      font-family: var(--font-display);
       font-size: 18px;
       font-weight: 600;
-      margin-top: 24px;
+      margin-top: 26px;
       margin-bottom: 10px;
-      color: #fff;
+      color: var(--text);
     }
 
     p {
       margin-bottom: 16px;
-      color: #ccc;
+      color: var(--text-dim);
     }
 
     ul {
-      margin-left: 24px;
+      margin-left: 22px;
       margin-bottom: 16px;
     }
 
     li {
       margin-bottom: 8px;
-      color: #ccc;
+      color: var(--text-dim);
     }
 
-    strong {
-      color: #fff;
+    strong { color: var(--text); font-weight: 600; }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1px 6px;
+      color: var(--accent);
     }
 
     a {
-      color: #00d09c;
+      color: var(--accent);
       text-decoration: none;
+      transition: color 0.2s ease;
     }
 
-    a:hover {
-      text-decoration: underline;
-    }
+    a:hover { color: var(--accent-dim); text-decoration: underline; }
 
     .back-btn {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.1);
-      color: #ccc;
-      padding: 10px 20px;
-      border-radius: 10px;
+      background: var(--panel);
+      backdrop-filter: blur(20px) saturate(140%);
+      -webkit-backdrop-filter: blur(20px) saturate(140%);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 11px 22px;
+      border-radius: var(--radius);
       font-size: 14px;
       font-weight: 500;
       text-decoration: none;
-      transition: all 0.2s;
-      margin-top: 32px;
+      transition: all 0.2s ease;
+      margin-top: 40px;
     }
 
     .back-btn:hover {
-      background: rgba(255,255,255,0.12);
-      color: #fff;
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: 0 0 24px var(--accent-glow);
+      text-decoration: none;
     }
 
     @media (max-width: 600px) {
-      h1 { font-size: 28px; }
+      h1 { font-size: 30px; }
       h2 { font-size: 20px; }
-      .container { padding: 24px 16px; }
+      .container { padding: 32px 18px 56px; }
     }
   </style>
 </head>
@@ -183,14 +245,15 @@
 
   <main>
     <div class="container">
+      <a href="/" class="back-top">&larr; Back to app</a>
       <article itemscope itemtype="https://schema.org/WebPage">
         <h1 itemprop="name">Privacy Policy</h1>
         <p class="last-updated">Last Updated: <time datetime="2026-07-26" itemprop="dateModified">July 26, 2026</time></p>
 
         <p itemprop="description">At Phantom Mail, we believe privacy is a fundamental right. We're committed to protecting your anonymity and minimizing data collection. This policy explains what minimal data we collect, how we use it solely for service delivery, and your rights.</p>
 
-        <div class="warning-box" style="background: rgba(0,208,156,0.08); border: 1px solid rgba(0,208,156,0.25); border-radius: 12px; padding: 16px 20px; margin: 20px 0;" role="note" aria-label="Privacy Commitment">
-          <strong style="color: #00d09c;">🔒 Our Privacy Commitment:</strong>
+        <div class="warning-box" style="background: var(--panel); backdrop-filter: blur(20px) saturate(140%); -webkit-backdrop-filter: blur(20px) saturate(140%); border: 1px solid rgba(0,229,179,0.25); border-radius: var(--radius); padding: 16px 20px; margin: 24px 0; box-shadow: 0 0 32px var(--accent-glow);" role="note" aria-label="Privacy Commitment">
+          <strong style="color: var(--accent);">🔒 Our Privacy Commitment:</strong>
           <p style="margin-top: 8px; margin-bottom: 0;">We do not track your activity, we do not monitor what you do with our service, and we do not share your data with anyone. We cannot and will not report your activities to authorities or third parties. Your privacy is your own.</p>
         </div>
 
@@ -320,7 +383,7 @@
           </ul>
         </section>
 
-        <a href="/" class="back-btn">← Back to Home</a>
+        <a href="/" class="back-btn">&larr; Back to app</a>
       </article>
     </div>
   </main>

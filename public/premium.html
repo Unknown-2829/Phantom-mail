@@ -11,14 +11,15 @@
   <link rel="icon" type="image/png" sizes="32x32" href="https://assets.unknowns.app/favicon-32x32.png">
   <link rel="apple-touch-icon" sizes="180x180" href="https://assets.unknowns.app/apple-touch-icon-180.png">
   <meta name="msapplication-TileImage" content="https://assets.unknowns.app/ms-tile-150.png">
-  <meta name="msapplication-TileColor" content="#0a0a1f">
+  <meta name="msapplication-TileColor" content="#07080f">
   <link rel="manifest" href="/manifest.json">
 
   <!-- Primary SEO -->
   <meta name="description" content="Upgrade to Phantom Mail Premium for 15-day retention, custom handles, domain choice, email forwarding and full API access.">
   <meta name="keywords" content="phantom mail premium, disposable email retention, custom email handle, anonymous email premium">
   <meta name="author" content="Phantom Mail">
-  <meta name="theme-color" content="#00d09c">
+  <meta name="theme-color" content="#00e5b3">
+  <meta name="color-scheme" content="dark">
   <meta name="robots" content="index, follow">
   <link rel="canonical" href="https://mail.unknowns.app/premium.html">
 
@@ -39,15 +40,107 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
   <style>
+    /* ═══════════════════════════════════════════════════════════════
+       PHANTOM MAIL — Premium page · "Phantom Dark" design system
+       Near-black space aesthetic · cyan-mint accent · violet = premium.
+       Mirrors public/styles.css tokens. No bare hex outside :root.
+       ═══════════════════════════════════════════════════════════════ */
+    :root {
+      /* surfaces */
+      --bg: #07080f;
+      --surface: #0d1117;
+      --surface-2: #161b22;
+      --panel: rgba(255,255,255,0.03);
+      --border: rgba(255,255,255,0.08);
+      --border-strong: rgba(255,255,255,0.14);
+
+      /* brand */
+      --accent: #00e5b3;
+      --accent-dim: #00b894;
+      --accent-glow: rgba(0,229,179,0.12);
+      --violet: #7c5cfc;
+      --violet-glow: rgba(124,92,252,0.15);
+      --amber: #ffb703;
+      --danger: #f04438;
+
+      /* text */
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --text-muted: #64748b;
+
+      /* geometry */
+      --radius: 12px; --radius-sm: 8px; --radius-lg: 16px; --radius-full: 999px;
+
+      /* elevation */
+      --shadow-2: 0 8px 24px rgba(0,0,0,0.45);
+      --shadow-glow: 0 0 40px var(--accent-glow);
+      --shadow-violet: 0 0 40px var(--violet-glow);
+
+      /* motion */
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+      --dur-fast: 150ms; --dur: 250ms; --dur-slow: 400ms;
+
+      /* type */
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-display: 'Space Grotesk', 'Inter', sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+      /* derived helpers (token-scoped) */
+      --on-accent: #04251d;
+      --on-violet: #ffffff;
+      --white: #ffffff;
+      --glass-blur: blur(20px) saturate(140%);
+
+      /* premium accent tints (violet-based, no bare hex in rules) */
+      --violet-soft: rgba(124,92,252,0.10);
+      --violet-line: rgba(124,92,252,0.35);
+      --accent-soft: rgba(0,229,179,0.10);
+      --accent-line: rgba(0,229,179,0.35);
+      --amber-soft: rgba(255,183,3,0.10);
+      --amber-line: rgba(255,183,3,0.30);
+      --amber-text: #ffc44d;
+      --accent-glow-soft: rgba(0,229,179,0.05);
+      --nav-bg: rgba(7,8,15,0.72);
+    }
+
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
+    html { color-scheme: dark; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
     body {
-      font-family: 'Inter', sans-serif;
-      background: #0d0d1a;
-      color: #fff;
-      min-height: 100vh;
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      min-height: 100dvh;
+      text-rendering: optimizeLegibility;
+      position: relative;
+    }
+
+    /* Ambient starfield glow behind the page — matches the main app */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+      background:
+        radial-gradient(1200px 700px at 12% -10%, var(--accent-glow), transparent 60%),
+        radial-gradient(900px 600px at 100% 0%, var(--violet-glow), transparent 55%),
+        radial-gradient(1000px 800px at 50% 120%, var(--accent-glow-soft), transparent 60%);
+      opacity: 0.9;
+    }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-display);
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      line-height: 1.2;
     }
 
     /* ---- Top Nav ---- */
@@ -56,27 +149,29 @@
       align-items: center;
       justify-content: space-between;
       padding: 16px 24px;
-      background: rgba(13,13,26,0.95);
-      border-bottom: 1px solid rgba(255,255,255,0.06);
+      background: var(--nav-bg);
+      border-bottom: 1px solid var(--border);
       position: sticky;
       top: 0;
       z-index: 100;
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
     }
 
     .prem-nav-logo {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       text-decoration: none;
-      color: #fff;
+      color: var(--text);
+      font-family: var(--font-display);
       font-size: 18px;
       font-weight: 700;
+      letter-spacing: 0.02em;
       flex-shrink: 0;
     }
 
-    .prem-nav-logo span { color: #00d09c; }
+    .prem-nav-logo span { color: var(--accent); }
 
     .prem-nav-right {
       display: flex;
@@ -86,11 +181,11 @@
     }
 
     .nav-back-btn {
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.1);
-      color: #ccc;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
       padding: 8px 16px;
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       font-size: 13px;
       font-weight: 500;
       cursor: pointer;
@@ -98,16 +193,16 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      transition: background 0.2s, color 0.2s;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
     }
-    .nav-back-btn:hover { background: rgba(255,255,255,0.12); color: #fff; }
+    .nav-back-btn:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
 
     .nav-user-badge {
-      background: rgba(0,208,156,0.12);
-      border: 1px solid rgba(0,208,156,0.3);
-      color: #00d09c;
-      padding: 7px 10px;
-      border-radius: 20px;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      color: var(--accent);
+      padding: 7px 12px;
+      border-radius: var(--radius-full);
       font-size: 12px;
       font-weight: 600;
       display: none;
@@ -117,15 +212,15 @@
       white-space: nowrap;
       flex-shrink: 1;
     }
-    .nav-user-badge.show { display: inline-flex; align-items: center; gap: 5px; }
+    .nav-user-badge.show { display: inline-flex; align-items: center; gap: 6px; }
 
     /* Avatar circle for the user badge — always compact regardless of username length */
     .nav-user-avatar {
       width: 20px;
       height: 20px;
       border-radius: 50%;
-      background: #00d09c;
-      color: #0d0d1a;
+      background: var(--accent);
+      color: var(--on-accent);
       font-size: 11px;
       font-weight: 800;
       display: flex;
@@ -136,22 +231,25 @@
 
     /* ---- Hero ---- */
     .prem-hero {
+      position: relative;
+      z-index: 1;
       text-align: center;
       padding: 60px 20px 40px;
-      background: radial-gradient(ellipse at 50% 0%, rgba(255,215,0,0.06) 0%, transparent 70%);
+      background: radial-gradient(ellipse at 50% 0%, var(--violet-glow) 0%, transparent 70%);
     }
 
     .prem-hero-badge {
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      background: rgba(255,215,0,0.1);
-      border: 1px solid rgba(255,215,0,0.3);
-      color: #ffd700;
+      background: var(--violet-glow);
+      border: 1px solid var(--violet-line);
+      color: var(--violet);
+      font-family: var(--font-display);
       font-size: 12px;
       font-weight: 700;
       padding: 6px 16px;
-      border-radius: 20px;
+      border-radius: var(--radius-full);
       letter-spacing: 1px;
       text-transform: uppercase;
       margin-bottom: 20px;
@@ -159,21 +257,21 @@
 
     .prem-hero h1 {
       font-size: clamp(28px, 6vw, 48px);
-      font-weight: 800;
-      letter-spacing: -1px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
       margin-bottom: 14px;
       line-height: 1.15;
     }
 
     .prem-hero h1 .gold {
-      background: linear-gradient(to right, #ffd700, #ff8c00);
+      background: linear-gradient(to right, var(--violet), var(--accent));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
 
     .prem-hero p {
-      color: #8b8baf;
+      color: var(--text-dim);
       font-size: 16px;
       max-width: 480px;
       margin: 0 auto;
@@ -181,6 +279,8 @@
 
     /* ---- Progress Steps ---- */
     .prem-steps-bar {
+      position: relative;
+      z-index: 1;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -206,56 +306,59 @@
       left: 50%;
       right: -50%;
       height: 2px;
-      background: rgba(255,255,255,0.1);
-      transition: background 0.4s;
+      background: var(--border);
+      transition: background var(--dur-slow) var(--ease);
     }
 
     .prem-step-item.done:not(:last-child)::after,
     .prem-step-item.active:not(:last-child)::after {
-      background: rgba(0,208,156,0.4);
+      background: var(--accent-line);
     }
 
     .prem-step-circle {
       width: 32px;
       height: 32px;
       border-radius: 50%;
-      border: 2px solid rgba(255,255,255,0.15);
+      border: 2px solid var(--border-strong);
       display: flex;
       align-items: center;
       justify-content: center;
+      font-family: var(--font-mono);
       font-size: 13px;
-      font-weight: 700;
-      color: #555;
-      background: #1a1a2e;
-      transition: all 0.3s;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--surface-2);
+      transition: all var(--dur) var(--ease);
       position: relative;
       z-index: 1;
     }
 
     .prem-step-item.active .prem-step-circle {
-      border-color: #00d09c;
-      color: #00d09c;
-      box-shadow: 0 0 12px rgba(0,208,156,0.35);
+      border-color: var(--accent);
+      color: var(--accent);
+      box-shadow: 0 0 12px var(--accent-glow);
     }
 
     .prem-step-item.done .prem-step-circle {
-      border-color: #00d09c;
-      background: #00d09c;
-      color: #fff;
+      border-color: var(--accent);
+      background: var(--accent);
+      color: var(--on-accent);
     }
 
     .prem-step-label {
       font-size: 11px;
-      color: #555;
+      color: var(--text-muted);
       font-weight: 500;
       white-space: nowrap;
     }
 
-    .prem-step-item.active .prem-step-label { color: #00d09c; }
-    .prem-step-item.done .prem-step-label { color: #00d09c; }
+    .prem-step-item.active .prem-step-label { color: var(--accent); }
+    .prem-step-item.done .prem-step-label { color: var(--accent); }
 
     /* ---- Content ---- */
     .prem-content {
+      position: relative;
+      z-index: 1;
       max-width: 700px;
       margin: 0 auto;
       padding: 0 20px 80px;
@@ -263,7 +366,7 @@
 
     /* ---- Step Panels ---- */
     .prem-panel { display: none; }
-    .prem-panel.active { display: block; animation: fadeUp 0.4s ease forwards; }
+    .prem-panel.active { display: block; animation: fadeUp var(--dur-slow) var(--ease) forwards; }
 
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(16px); }
@@ -272,11 +375,12 @@
 
     /* Glass card */
     .glass-card {
-      background: rgba(26,26,46,0.8);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 20px;
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      box-shadow: var(--shadow-2);
     }
 
     /* ---- Features Grid (Step 1) ---- */
@@ -288,37 +392,42 @@
     }
 
     .prem-feat {
-      background: rgba(26,26,46,0.6);
-      border: 1px solid rgba(255,255,255,0.07);
-      border-radius: 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       padding: 18px;
       display: flex;
       align-items: flex-start;
       gap: 14px;
-      transition: border-color 0.2s, transform 0.2s;
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      transition: border-color var(--dur) var(--ease), transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
     }
 
     .prem-feat:hover {
-      border-color: rgba(0,208,156,0.3);
+      border-color: var(--accent-line);
       transform: translateY(-2px);
+      box-shadow: var(--shadow-glow);
     }
 
-    .prem-feat-ico { font-size: 26px; flex-shrink: 0; }
+    .prem-feat-ico { font-size: 26px; flex-shrink: 0; line-height: 1; }
 
     .prem-feat-text strong {
       display: block;
-      color: #fff;
+      color: var(--text);
+      font-family: var(--font-display);
       font-size: 14px;
+      font-weight: 600;
       margin-bottom: 3px;
     }
 
-    .prem-feat-text span { color: #888; font-size: 12px; }
+    .prem-feat-text span { color: var(--text-dim); font-size: 12px; }
 
     /* ---- Compare table ---- */
     .prem-compare {
-      border-radius: 16px;
+      border-radius: var(--radius-lg);
       overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.08);
+      border: 1px solid var(--border);
       margin-bottom: 28px;
     }
 
@@ -327,28 +436,29 @@
       grid-template-columns: 2fr 1fr 1fr;
       padding: 14px 20px;
       font-size: 13px;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
+      border-bottom: 1px solid var(--border);
       align-items: center;
     }
 
     .comp-row:last-child { border-bottom: none; }
 
     .comp-head {
-      background: rgba(0,0,0,0.3);
+      background: var(--surface-2);
+      font-family: var(--font-display);
       font-size: 11px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 1px;
     }
 
-    .comp-head .c-prem { color: #ffd700; }
-    .comp-head .c-free { color: #666; }
-    .comp-head .c-feat { color: #888; }
+    .comp-head .c-prem { color: var(--violet); }
+    .comp-head .c-free { color: var(--text-muted); }
+    .comp-head .c-feat { color: var(--text-dim); }
 
-    .c-feat { color: #ccc; }
-    .c-free { text-align: center; color: #666; }
-    .c-prem { text-align: center; color: #fff; font-weight: 600; }
-    .c-check { color: #00d09c; margin-right: 4px; }
+    .c-feat { color: var(--text); }
+    .c-free { text-align: center; color: var(--text-muted); }
+    .c-prem { text-align: center; color: var(--text); font-weight: 600; }
+    .c-check { color: var(--accent); margin-right: 4px; }
 
     /* ---- Pricing Cards ---- */
     .prem-pricing {
@@ -359,44 +469,52 @@
 
     .prem-price-card {
       flex: 1;
-      background: rgba(20,20,35,0.7);
-      border: 2px solid rgba(255,255,255,0.08);
-      border-radius: 16px;
+      background: var(--panel);
+      border: 2px solid var(--border);
+      border-radius: var(--radius-lg);
       padding: 28px 20px;
       text-align: center;
       cursor: pointer;
       position: relative;
-      transition: all 0.3s;
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      transition: all var(--dur) var(--ease);
     }
 
-    /* Monthly plan gets a default green outline */
+    /* Monthly plan gets a default accent outline */
     .prem-price-card.monthly-card {
-      border-color: rgba(0,208,156,0.45);
-      background: rgba(0,208,156,0.04);
+      border-color: var(--accent-line);
+      background: var(--accent-soft);
     }
 
     .prem-price-card:hover {
-      border-color: rgba(255,255,255,0.2);
+      border-color: var(--border-strong);
       transform: translateY(-4px);
     }
 
     .prem-price-card.monthly-card:hover {
-      border-color: #00d09c;
+      border-color: var(--accent);
     }
 
+    /* Featured (yearly) plan leans violet — the premium highlight */
     .prem-price-card.featured {
-      border-color: rgba(255,215,0,0.25);
-      background: linear-gradient(160deg, rgba(20,20,35,0.9) 0%, rgba(255,215,0,0.04) 100%);
+      border-color: var(--violet-line);
+      background: linear-gradient(160deg, var(--panel) 0%, var(--violet-soft) 100%);
+    }
+
+    .prem-price-card.featured:hover {
+      border-color: var(--violet);
+      box-shadow: var(--shadow-violet);
     }
 
     .prem-price-card.selected {
-      border-color: #00d09c !important;
-      box-shadow: 0 0 0 1px #00d09c, 0 12px 30px rgba(0,208,156,0.2);
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 0 1px var(--accent), 0 12px 30px var(--accent-glow);
     }
 
     .prem-price-card.featured.selected {
-      border-color: #ffd700 !important;
-      box-shadow: 0 0 0 2px #ffd700, 0 15px 35px rgba(255,215,0,0.2);
+      border-color: var(--violet) !important;
+      box-shadow: 0 0 0 2px var(--violet), 0 15px 35px var(--violet-glow);
     }
 
     .price-badge {
@@ -404,42 +522,46 @@
       top: -13px;
       left: 50%;
       transform: translateX(-50%);
-      background: linear-gradient(90deg, #ffd700, #ffa500);
-      color: #000;
+      background: var(--violet);
+      color: var(--on-violet);
+      font-family: var(--font-display);
       font-size: 10px;
-      font-weight: 800;
+      font-weight: 700;
       padding: 5px 14px;
-      border-radius: 20px;
+      border-radius: var(--radius-full);
       text-transform: uppercase;
       letter-spacing: 1.5px;
       white-space: nowrap;
+      box-shadow: 0 4px 16px var(--violet-glow);
     }
 
     .price-name {
       font-size: 14px;
       font-weight: 600;
-      color: #aaa;
+      color: var(--text-dim);
       margin-bottom: 10px;
     }
 
-    .prem-price-card.featured .price-name { color: #ffd700; }
+    .prem-price-card.featured .price-name { color: var(--violet); }
 
     .price-amount {
+      font-family: var(--font-mono);
       font-size: 38px;
-      font-weight: 800;
-      color: #fff;
+      font-weight: 600;
+      color: var(--text);
     }
 
     .price-amount sub {
+      font-family: var(--font-body);
       font-size: 15px;
       font-weight: 400;
-      color: #666;
+      color: var(--text-muted);
       vertical-align: baseline;
     }
 
     .price-save {
       margin-top: 8px;
-      color: #00d09c;
+      color: var(--accent);
       font-size: 12px;
       font-weight: 600;
     }
@@ -448,22 +570,23 @@
     .prem-cta-btn {
       display: block;
       width: 100%;
-      background: linear-gradient(135deg, #00d09c 0%, #00b386 100%);
-      color: #fff;
+      background: var(--accent);
+      color: var(--on-accent);
       border: none;
-      padding: 17px;
-      border-radius: 14px;
-      font-size: 17px;
+      padding: 16px;
+      border-radius: var(--radius);
+      font-family: var(--font-display);
+      font-size: 16px;
       font-weight: 700;
       cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s;
-      box-shadow: 0 4px 20px rgba(0,208,156,0.3);
+      transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+      box-shadow: var(--shadow-glow);
       text-align: center;
     }
 
     .prem-cta-btn:hover {
-      transform: translateY(-3px);
-      box-shadow: 0 8px 30px rgba(0,208,156,0.45);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 30px var(--accent-glow);
     }
 
     .prem-cta-btn:active { transform: scale(0.98); }
@@ -473,10 +596,13 @@
       padding: 32px;
     }
 
+    .prem-auth-box h2 { font-family: var(--font-display); }
+
     .prem-auth-tabs {
       display: flex;
-      background: #131320;
-      border-radius: 12px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       padding: 4px;
       margin-bottom: 24px;
     }
@@ -485,52 +611,52 @@
       flex: 1;
       background: transparent;
       border: none;
-      color: #666;
+      color: var(--text-muted);
       padding: 10px;
       font-size: 13px;
       font-weight: 600;
-      border-radius: 9px;
+      border-radius: var(--radius-sm);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all var(--dur-fast) var(--ease);
     }
 
     .prem-auth-tab.active {
-      background: #00d09c;
-      color: #fff;
+      background: var(--accent);
+      color: var(--on-accent);
     }
 
     .auth-field {
       width: 100%;
-      background: #131320;
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
       padding: 13px 16px;
-      color: #fff;
+      color: var(--text);
       font-size: 14px;
       outline: none;
       margin-bottom: 12px;
-      transition: border-color 0.2s;
-      font-family: 'Inter', sans-serif;
+      transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+      font-family: var(--font-body);
     }
 
-    .auth-field:focus { border-color: #00d09c; }
-    .auth-field::placeholder { color: #444; }
+    .auth-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .auth-field::placeholder { color: var(--text-muted); }
 
     .auth-warn {
-      background: rgba(255,193,7,0.08);
-      border: 1px solid rgba(255,193,7,0.25);
-      border-radius: 10px;
+      background: var(--amber-soft);
+      border: 1px solid var(--amber-line);
+      border-radius: var(--radius-sm);
       padding: 12px 14px;
       font-size: 12px;
-      color: #ffc107;
+      color: var(--amber-text);
       line-height: 1.5;
       margin-bottom: 14px;
     }
 
-    .auth-warn strong { color: #ffdd57; }
+    .auth-warn strong { color: var(--amber); }
 
     .auth-err {
-      color: #ff6b6b;
+      color: var(--danger);
       font-size: 13px;
       text-align: center;
       margin-top: 10px;
@@ -545,9 +671,9 @@
     }
 
     .checkout-summary {
-      background: rgba(255,215,0,0.08);
-      border: 1px solid rgba(255,215,0,0.25);
-      border-radius: 12px;
+      background: var(--violet-soft);
+      border: 1px solid var(--violet-line);
+      border-radius: var(--radius);
       padding: 16px 20px;
       display: flex;
       align-items: center;
@@ -557,14 +683,14 @@
       gap: 8px;
     }
 
-    .checkout-summary .cs-label { color: #aaa; font-size: 13px; }
-    .checkout-summary .cs-plan { color: #ffd700; font-size: 16px; font-weight: 700; }
-    .checkout-summary .cs-amount { color: #fff; font-size: 20px; font-weight: 800; }
+    .checkout-summary .cs-label { color: var(--text-dim); font-size: 13px; }
+    .checkout-summary .cs-plan { color: var(--violet); font-family: var(--font-display); font-size: 16px; font-weight: 700; }
+    .checkout-summary .cs-amount { color: var(--text); font-family: var(--font-mono); font-size: 20px; font-weight: 600; }
 
     .checkout-step-label {
       font-size: 14px;
       font-weight: 600;
-      color: #ddd;
+      color: var(--text);
       margin-bottom: 14px;
       display: flex;
       align-items: center;
@@ -575,11 +701,12 @@
       width: 24px;
       height: 24px;
       border-radius: 50%;
-      background: rgba(0,208,156,0.15);
-      border: 1px solid rgba(0,208,156,0.4);
-      color: #00d09c;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      color: var(--accent);
+      font-family: var(--font-mono);
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 600;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -594,93 +721,95 @@
 
     .crypto-tab {
       flex: 1;
-      background: rgba(37,37,64,0.8);
-      border: 1px solid rgba(255,255,255,0.1);
-      color: #888;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
       padding: 10px 8px;
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       font-size: 12px;
       font-weight: 700;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all var(--dur-fast) var(--ease);
       text-align: center;
     }
 
     .crypto-tab.active {
-      background: rgba(0,208,156,0.15);
-      border-color: #00d09c;
-      color: #00d09c;
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
     }
 
     .crypto-addr-box {
-      background: #0d0d1a;
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       padding: 14px 16px;
       margin-bottom: 8px;
     }
 
     .crypto-addr-box code {
       display: block;
-      color: #ffd700;
-      font-family: 'JetBrains Mono', monospace;
+      color: var(--accent);
+      font-family: var(--font-mono);
       font-size: 13px;
       word-break: break-all;
       margin-bottom: 10px;
     }
 
     .crypto-copy-btn {
-      background: rgba(255,215,0,0.1);
-      border: 1px solid rgba(255,215,0,0.3);
-      color: #ffd700;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      color: var(--accent);
       padding: 7px 16px;
-      border-radius: 8px;
+      border-radius: var(--radius-sm);
       font-size: 12px;
       font-weight: 700;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all var(--dur-fast) var(--ease);
     }
 
-    .crypto-copy-btn:hover { background: #ffd700; color: #000; }
+    .crypto-copy-btn:hover { background: var(--accent); color: var(--on-accent); }
 
     .crypto-network {
       font-size: 11px;
-      color: #555;
+      color: var(--text-muted);
       margin-bottom: 20px;
     }
 
     .co-divider {
       height: 1px;
-      background: rgba(255,255,255,0.06);
+      background: var(--border);
       margin: 20px 0;
     }
 
+    /* Primary "Pay with Crypto" action — accent-driven like the main app CTA */
     .telegram-btn {
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 10px;
       width: 100%;
-      background: linear-gradient(135deg, #0088cc, #0099dd);
-      color: #fff;
+      background: var(--accent);
+      color: var(--on-accent);
       text-decoration: none;
       padding: 16px;
-      border-radius: 14px;
+      border-radius: var(--radius);
+      font-family: var(--font-display);
       font-size: 16px;
       font-weight: 700;
       margin-top: 8px;
-      transition: transform 0.2s, box-shadow 0.2s;
-      box-shadow: 0 4px 16px rgba(0,136,204,0.3);
+      transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+      box-shadow: var(--shadow-glow);
     }
 
     .telegram-btn:hover {
       transform: translateY(-2px);
-      box-shadow: 0 8px 24px rgba(0,136,204,0.4);
+      box-shadow: 0 8px 30px var(--accent-glow);
     }
 
     .checkout-note {
       text-align: center;
-      color: #555;
+      color: var(--text-muted);
       font-size: 12px;
       margin-top: 14px;
       line-height: 1.5;
@@ -690,7 +819,7 @@
     .section-sep {
       border: none;
       height: 1px;
-      background: rgba(255,255,255,0.06);
+      background: var(--border);
       margin: 32px 0;
     }
 
@@ -703,35 +832,36 @@
     .success-ico { font-size: 60px; margin-bottom: 20px; }
 
     .success-title {
+      font-family: var(--font-display);
       font-size: 26px;
-      font-weight: 800;
+      font-weight: 700;
       margin-bottom: 10px;
     }
 
     .success-sub {
-      color: #8b8baf;
+      color: var(--text-dim);
       font-size: 15px;
       margin-bottom: 28px;
     }
 
     /* ---- Back Button ---- */
     .prem-back-btn {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
-      color: #888;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-dim);
       padding: 10px 20px;
-      border-radius: 10px;
+      border-radius: var(--radius-sm);
       font-size: 13px;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all var(--dur-fast) var(--ease);
       display: inline-flex;
       align-items: center;
       gap: 6px;
     }
 
-    .prem-back-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+    .prem-back-btn:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
 
-    .otp-input { letter-spacing: 0.3em; font-size: 20px; text-align: center; }
+    .otp-input { letter-spacing: 0.3em; font-size: 20px; text-align: center; font-family: var(--font-mono); }
 
     /* ---- Responsive ---- */
     @media (max-width: 600px) {
@@ -744,6 +874,10 @@
       .checkout-summary { flex-direction: column; text-align: center; }
       .prem-nav { padding: 12px 16px; }
       .prem-nav-logo { font-size: 16px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
     }
   </style>
 </head>
@@ -908,15 +1042,15 @@
       </div>
 
       <button class="prem-cta-btn" onclick="ppContinueFromPlan()">Continue →</button>
-      <p id="pp-plan-err" style="color:#ff6b6b;font-size:13px;margin-top:10px;text-align:center;display:none;">Please select a plan to continue.</p>
+      <p id="pp-plan-err" style="color:var(--danger);font-size:13px;margin-top:10px;text-align:center;display:none;">Please select a plan to continue.</p>
     </div>
 
     <!-- STEP 2: Account -->
     <div class="prem-panel" id="pp-step-2">
       <div class="glass-card">
         <div class="prem-auth-box">
-          <h2 style="font-size:22px;font-weight:800;margin-bottom:6px;">Create or Sign In</h2>
-          <p style="color:#8b8baf;font-size:14px;margin-bottom:20px;">An account is required to link your Premium subscription.</p>
+          <h2 style="font-size:22px;font-weight:700;margin-bottom:6px;">Create or Sign In</h2>
+          <p style="color:var(--text-dim);font-size:14px;margin-bottom:20px;">An account is required to link your Premium subscription.</p>
 
           <div class="prem-auth-tabs">
             <button class="prem-auth-tab active" id="pp-tab-signup" onclick="ppSwitchTab('signup')">Create Account</button>
@@ -932,14 +1066,14 @@
               <div class="auth-warn" id="pp-su-no-email-warn">
                 ⚠️ <strong>No recovery email.</strong> If you forget your password, your account cannot be recovered.
               </div>
-              <div class="auth-warn" id="pp-su-email-notice" style="display:none;background:rgba(0,208,156,0.08);border-color:rgba(0,208,156,0.3);color:#00d09c;">
+              <div class="auth-warn" id="pp-su-email-notice" style="display:none;background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);">
                 ✉️ We'll send a verification code to confirm your email.
               </div>
               <button class="prem-cta-btn" id="pp-su-btn" onclick="ppSignUp()">Create Account & Continue →</button>
             </div>
             <!-- Sign Up Step 2: OTP verification -->
             <div id="pp-su-step2" style="display:none;">
-              <p style="font-size:13px;color:#8b8baf;margin-bottom:12px;" id="pp-su-otp-desc">Enter the 6-digit code sent to your email.</p>
+              <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;" id="pp-su-otp-desc">Enter the 6-digit code sent to your email.</p>
               <input type="text" id="pp-su-otp" class="auth-field otp-input" placeholder="000000" maxlength="6" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" style="letter-spacing:0.3em;font-size:20px;text-align:center;">
               <button class="prem-cta-btn" onclick="ppVerifyAndSignUp()">Verify & Create Account →</button>
               <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
@@ -955,7 +1089,7 @@
             <input type="password" id="pp-si-password" class="auth-field" placeholder="Password" autocomplete="current-password">
             <button class="prem-cta-btn" onclick="ppSignIn()">Sign In & Continue →</button>
             <div style="text-align:center;margin-top:8px;">
-              <button type="button" style="background:none;border:none;color:#00d09c;font-size:13px;cursor:pointer;" onclick="ppShowForgot()">Forgot password?</button>
+              <button type="button" style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;" onclick="ppShowForgot()">Forgot password?</button>
             </div>
           </div>
 
@@ -965,7 +1099,7 @@
               <button type="button" class="prem-back-btn" style="margin:0;padding:6px 12px;font-size:13px;" onclick="ppHideForgot()">← Back</button>
               <span style="font-size:15px;font-weight:600;">Reset Password</span>
             </div>
-            <p style="font-size:13px;color:#8b8baf;margin-bottom:12px;">Enter your username or email. We'll send a reset code to your recovery email.</p>
+            <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;">Enter your username or email. We'll send a reset code to your recovery email.</p>
             <input type="text" id="pp-forgot-username" class="auth-field" placeholder="Username or email" autocomplete="username">
             <button class="prem-cta-btn" onclick="ppSendForgotOtp()">Send Reset Code</button>
           </div>
@@ -976,13 +1110,13 @@
               <button type="button" class="prem-back-btn" style="margin:0;padding:6px 12px;font-size:13px;" onclick="ppShowForgot()">← Back</button>
               <span style="font-size:15px;font-weight:600;">Enter Code</span>
             </div>
-            <p style="font-size:13px;color:#8b8baf;margin-bottom:12px;" id="pp-reset-desc">Enter the 6-digit code sent to your email.</p>
+            <p style="font-size:13px;color:var(--text-dim);margin-bottom:12px;" id="pp-reset-desc">Enter the 6-digit code sent to your email.</p>
             <input type="text" id="pp-reset-otp" class="auth-field otp-input" placeholder="000000" maxlength="6" inputmode="numeric" style="letter-spacing:0.3em;font-size:20px;text-align:center;">
             <input type="password" id="pp-reset-new-pw" class="auth-field" placeholder="New password (min 8 chars)" autocomplete="new-password">
             <input type="password" id="pp-reset-confirm-pw" class="auth-field" placeholder="Confirm new password" autocomplete="new-password">
             <button class="prem-cta-btn" onclick="ppSubmitReset()">Reset Password</button>
             <div style="text-align:center;margin-top:8px;">
-              <button type="button" style="background:none;border:none;color:#00d09c;font-size:13px;cursor:pointer;" onclick="ppResendForgotOtp()">Resend code</button>
+              <button type="button" style="background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;" onclick="ppResendForgotOtp()">Resend code</button>
             </div>
           </div>
 
@@ -1042,14 +1176,14 @@
             Once the payment confirms on-chain, Premium activates automatically.
           </div>
 
-          <a class="telegram-btn" id="pp-pay-link" href="mailto:support@unkn0wn.qzz.io?subject=Premium%20Payment" style="background:linear-gradient(135deg,#00d09c,#00b386);box-shadow:0 4px 16px rgba(0,208,156,0.3);">
+          <a class="telegram-btn" id="pp-pay-link" href="mailto:support@unkn0wn.qzz.io?subject=Premium%20Payment">
             💳 Pay with Crypto
           </a>
 
           <p class="checkout-note">
-            Payments are processed by <strong style="color:#00d09c">NOWPayments</strong>. After the transaction confirms on-chain,
+            Payments are processed by <strong style="color:var(--accent)">NOWPayments</strong>. After the transaction confirms on-chain,
             Premium is activated automatically for your account. Need help? Email
-            <strong style="color:#00d09c">support@unkn0wn.qzz.io</strong>.
+            <strong style="color:var(--accent)">support@unkn0wn.qzz.io</strong>.
           </p>
         </div>
       </div>
@@ -1394,7 +1528,7 @@
           ppSwitchTab('signin');
           ppClearErr();
           const errEl = document.getElementById('pp-auth-err');
-          if (errEl) { errEl.textContent = '✅ Password reset! Please sign in.'; errEl.style.color = '#00d09c'; errEl.classList.add('show'); setTimeout(() => { errEl.classList.remove('show'); errEl.style.color = ''; }, 3000); }
+          if (errEl) { errEl.textContent = '✅ Password reset! Please sign in.'; errEl.style.color = 'var(--accent)'; errEl.classList.add('show'); setTimeout(() => { errEl.classList.remove('show'); errEl.style.color = ''; }, 3000); }
         } else {
           ppShowErr(data.error || 'Reset failed.');
         }

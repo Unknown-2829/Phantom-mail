@@ -268,9 +268,10 @@ function _showSessionExpiryBanner() {
   if (document.getElementById('session-expiry-banner')) return;
   const banner = document.createElement('div');
   banner.id = 'session-expiry-banner';
-  banner.style.cssText = 'position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:#1a1a2e;border:1px solid #00e5b3;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;z-index:9999;display:flex;gap:12px;align-items:center;box-shadow:0 4px 20px rgba(0,0,0,0.5);';
+  // Phantom Dark tokens (see styles.css §25 Banners). z-index matches --z-banner (700).
+  banner.style.cssText = 'position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:var(--surface-2);border:1px solid var(--border-strong);color:var(--text);padding:10px 20px;border-radius:var(--radius-sm);font-size:13px;z-index:700;display:flex;gap:12px;align-items:center;box-shadow:var(--shadow-2);';
   const stayBtn = document.createElement('button');
-  stayBtn.style.cssText = 'background:#00e5b3;color:#000;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-weight:700;';
+  stayBtn.style.cssText = 'background:var(--accent);color:var(--on-accent);border:none;padding:4px 10px;border-radius:var(--radius-sm);cursor:pointer;font-weight:700;';
   stayBtn.textContent = 'Stay signed in';
   stayBtn.addEventListener('click', () => {
     refreshPremiumStatus();
@@ -625,21 +626,22 @@ function renderInbox() {
   if (emailsList.length === 0) {
     $inboxBody.innerHTML = `
       <div class="empty-inbox">
-        <div class="loading-animation">
-          <svg class="loading-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-            <g class="arrows-ring">
-               <path d="M50 10 A 40 40 0 0 1 85 30 L 90 25 L 90 40 L 75 40 L 80 35 A 35 35 0 0 0 50 15 Z" />
-               <path d="M50 90 A 40 40 0 0 1 15 70 L 10 75 L 10 60 L 25 60 L 20 65 A 35 35 0 0 0 50 85 Z" />
-            </g>
-            <g class="envelope-icon" transform="translate(28, 35) scale(0.45)">
-                <path d="M10,80 L90,80 L90,40 L50,65 L10,40 Z" fill="#D1D4DE"/>
-                <path d="M10,30 L50,55 L90,30 L50,5 Z" fill="#9FA3B5"/>
-                <rect x="10" y="30" width="80" height="50" rx="5" fill-opacity="0.2"/>
-            </g>
+        <div class="ghost-mascot">
+          <svg class="ghost-svg" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="ghostGrad" x1="0" y1="0" x2="0" y2="1">
+                <stop class="ghost-stop-top" offset="0"/>
+                <stop class="ghost-stop-bot" offset="1"/>
+              </linearGradient>
+            </defs>
+            <path d="M20 46a28 28 0 0 1 56 0v34c0 2.4-2.8 3.7-4.6 2.1l-4.6-4a3 3 0 0 0-4.1.2l-4.3 4.4a3 3 0 0 1-4.3 0l-4.3-4.4a3 3 0 0 0-4.2 0l-4.3 4.4a3 3 0 0 1-4.3 0l-4.2-4.3a3 3 0 0 0-4.1-.2l-4.5 4C22 83.7 20 82.4 20 80z"
+                  fill="url(#ghostGrad)" stroke="var(--accent)" stroke-width="2" stroke-opacity="0.55" stroke-linejoin="round"/>
+            <ellipse class="ghost-eye" cx="39" cy="45" rx="4" ry="6"/>
+            <ellipse class="ghost-eye" cx="57" cy="45" rx="4" ry="6"/>
           </svg>
         </div>
-        <p class="empty-title">Your inbox is empty</p>
-        <p class="empty-subtitle">Waiting for incoming emails</p>
+        <p class="empty-title">Nothing here yet</p>
+        <p class="empty-subtitle">Emails to your phantom address appear instantly.</p>
       </div>
     `;
     return;
@@ -1268,7 +1270,7 @@ function _renderEmailBody(email, body) {
     if (extracted) {
       body.innerHTML = `<div style="white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;overflow-x:hidden;font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',Arial,sans-serif;font-size:14px;line-height:1.6;color:#333;">${linkify(escapeHtml(extracted))}</div>`;
     } else {
-      body.innerHTML = '<p style="color:#888;font-size:14px;">Email body could not be displayed. <a id="view-source-link" href="#" style="color:#00d09c;text-decoration:none;font-weight:600;">View raw source ›</a></p>';
+      body.innerHTML = '<p class="body-fallback" style="font-size:14px;">Email body could not be displayed. <a id="view-source-link" href="#" style="color:var(--accent);text-decoration:none;font-weight:600;">View raw source ›</a></p>';
       const srcLink = document.getElementById('view-source-link');
       if (srcLink) srcLink.addEventListener('click', (e) => { e.preventDefault(); viewSource(); });
     }
@@ -1657,7 +1659,7 @@ function openAttLightbox(src, filename, type) {
         <div style="font-size:64px;margin-bottom:16px;">${getFileIcon(filename)}</div>
         <div style="font-size:18px;margin-bottom:24px;">${escapeHtml(filename)}</div>
         <a href="${src}" download="${escapeHtml(filename)}"
-           style="background:#00d09c;color:#000;padding:12px 28px;border-radius:8px;
+           style="background:var(--accent);color:var(--on-accent);padding:12px 28px;border-radius:8px;
                   text-decoration:none;font-weight:600;">⬇ Download</a>
       </div>`;
   }
@@ -1681,9 +1683,17 @@ function closeAttLightbox() {
 // ===== Auto Refresh (Visibility-Aware) =====
 function startAutoRefresh() {
   stopAutoRefresh();
+  startAutoRefresh._tick = 0;
   autoRefreshInterval = setInterval(() => {
-    if (!document.hidden) refreshEmails();
-  }, 6000);
+    if (document.hidden) return;
+    // KV cost control: when Pusher is delivering real-time, polling is only a slow
+    // safety net (~every 48s). When Pusher is down, poll every 12s. This replaces the
+    // old 6s firehose that exhausted the free KV list/write quota in ~1.5h per tab.
+    const connected = _pusher && _pusher.connection && _pusher.connection.state === 'connected';
+    startAutoRefresh._tick++;
+    if (connected && (startAutoRefresh._tick % 4 !== 0)) return;
+    refreshEmails();
+  }, 12000);
 }
 
 function stopAutoRefresh() {
@@ -2209,14 +2219,14 @@ async function loadApiKey() {
     if (data.apiKey) {
       const isPro = data.plan === 'pro';
       const planBadge = isPro
-        ? '<span style="background:#7c5cfc;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700;">PRO</span>'
-        : '<span style="background:#333;color:#aaa;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;">FREE</span>';
+        ? '<span style="background:var(--violet);color:var(--white);font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700;">PRO</span>'
+        : '<span style="background:var(--surface-3);color:var(--text-dim);font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;">FREE</span>';
       const q = data.quotas || {};
       const quotaHtml = `
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
-          <span style="font-size:11px;color:#888;">📥 Receive: <b style="color:#fff;">${q.receive?.used||0}/${q.receive?.limit||10}</b></span>
-          <span style="font-size:11px;color:#888;">📤 Send: <b style="color:#fff;">${q.send?.used||0}/${q.send?.limit||0}</b></span>
-          <span style="font-size:11px;color:#888;">⚡ Generate: <b style="color:#fff;">${q.generate?.used||0}/${q.generate?.limit||10}</b></span>
+          <span style="font-size:11px;color:var(--text-muted);">📥 Receive: <b style="color:var(--text);">${q.receive?.used||0}/${q.receive?.limit||10}</b></span>
+          <span style="font-size:11px;color:var(--text-muted);">📤 Send: <b style="color:var(--text);">${q.send?.used||0}/${q.send?.limit||0}</b></span>
+          <span style="font-size:11px;color:var(--text-muted);">⚡ Generate: <b style="color:var(--text);">${q.generate?.used||0}/${q.generate?.limit||10}</b></span>
         </div>`;
       container.innerHTML = `
         <div style="display:flex;align-items:center;gap:4px;">
@@ -3428,7 +3438,7 @@ function renderForwardingSettings(list) {
 
     if (e.forwarding) {
       const statusDiv = document.createElement('div');
-      statusDiv.style.cssText = 'font-size:12px;color:#00d09c;margin-top:6px;';
+      statusDiv.style.cssText = 'font-size:12px;color:var(--accent);margin-top:6px;';
       statusDiv.textContent = `✓ Forwarding to ${e.forwarding}`;
       item.appendChild(statusDiv);
     }
@@ -3777,7 +3787,7 @@ function _restoreComposeDraftIfAny() {
     // Show a discard-draft button in the error bar area
     const errEl = document.getElementById('compose-error');
     if (errEl) {
-      errEl.innerHTML = '📝 Draft restored. <button onclick="discardComposeDraft()" style="background:none;border:none;color:#00d09c;cursor:pointer;font-size:inherit;padding:0;text-decoration:underline;">Discard draft</button>';
+      errEl.innerHTML = '📝 Draft restored. <button onclick="discardComposeDraft()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:inherit;padding:0;text-decoration:underline;">Discard draft</button>';
       errEl.classList.remove('hidden');
     }
   } catch (_) {}
@@ -4333,14 +4343,14 @@ function renderSentBox() {
 
     // Delivery status badge
     const statusBadge = {
-      delivered:  `<span style="color:#00e5b3;font-size:11px;">✓ Delivered</span>`,
-      bounced:    `<span style="color:#ff4444;font-size:11px;">✗ Bounced</span>`,
-      failed:     `<span style="color:#ff4444;font-size:11px;">✗ Failed</span>`,
-      complained: `<span style="color:#ffa500;font-size:11px;">⚠ Spam Report</span>`,
-      suppressed: `<span style="color:#888;font-size:11px;">⊘ Suppressed</span>`,
-      delayed:    `<span style="color:#ffa500;font-size:11px;">⏳ Delayed</span>`,
-      sent:       `<span style="color:#888;font-size:11px;">⏳ Pending</span>`
-    }[status] || `<span style="color:#888;font-size:11px;">${status}</span>`;
+      delivered:  `<span style="color:var(--accent);font-size:11px;">✓ Delivered</span>`,
+      bounced:    `<span style="color:var(--danger);font-size:11px;">✗ Bounced</span>`,
+      failed:     `<span style="color:var(--danger);font-size:11px;">✗ Failed</span>`,
+      complained: `<span style="color:var(--amber);font-size:11px;">⚠ Spam Report</span>`,
+      suppressed: `<span style="color:var(--text-muted);font-size:11px;">⊘ Suppressed</span>`,
+      delayed:    `<span style="color:var(--amber);font-size:11px;">⏳ Delayed</span>`,
+      sent:       `<span style="color:var(--text-muted);font-size:11px;">⏳ Pending</span>`
+    }[status] || `<span style="color:var(--text-muted);font-size:11px;">${status}</span>`;
 
     const openBadge  = opens > 0
       ? `<span class="sent-opened-badge">👁 ${opens} open${opens > 1 ? 's' : ''}</span>`
@@ -4441,7 +4451,7 @@ function viewSentEmail(index) {
   const metaRowsEl = document.getElementById('modal-meta-rows');
   if (metaRowsEl) {
     const status = s.status || 'sent';
-    const statusColor = { delivered:'#00e5b3', bounced:'#ff4444', failed:'#ff4444', complained:'#ffa500' }[status] || '#888';
+    const statusColor = { delivered:'var(--accent)', bounced:'var(--danger)', failed:'var(--danger)', complained:'var(--amber)' }[status] || 'var(--text-muted)';
     const statusLabel = { delivered:'✅ Delivered', bounced:'✗ Bounced', failed:'✗ Failed', complained:'⚠ Spam Report', delayed:'⏳ Delayed', sent:'⏳ Sending…' }[status] || status;
     const uniqueOpens  = s.uniqueOpens  || s.opens  || 0;
     const uniqueClicks = s.uniqueClicks || s.clicks || 0;
@@ -4456,9 +4466,9 @@ function viewSentEmail(index) {
       </div>
       <div class="meta-row">
         <span class="meta-label">Opens</span>
-        <span class="meta-value" style="color:${uniqueOpens > 0 ? '#00d09c' : '#666'}">${uniqueOpens > 0 ? `👁 ${uniqueOpens} unique open${uniqueOpens > 1 ? 's' : ''}` : '⏳ Not opened yet'}</span>
+        <span class="meta-value" style="color:${uniqueOpens > 0 ? 'var(--accent)' : 'var(--text-muted)'}">${uniqueOpens > 0 ? `👁 ${uniqueOpens} unique open${uniqueOpens > 1 ? 's' : ''}` : '⏳ Not opened yet'}</span>
       </div>
-      ${uniqueClicks > 0 ? `<div class="meta-row"><span class="meta-label">Clicks</span><span class="meta-value" style="color:#7c5cfc">🖱 ${uniqueClicks} link click${uniqueClicks > 1 ? 's' : ''}</span></div>` : ''}`;
+      ${uniqueClicks > 0 ? `<div class="meta-row"><span class="meta-label">Clicks</span><span class="meta-value" style="color:var(--violet)">🖱 ${uniqueClicks} link click${uniqueClicks > 1 ? 's' : ''}</span></div>` : ''}`;
   }
 
   // ── Clear modal body, then render body exactly like inbox ──
@@ -4761,8 +4771,9 @@ function _showAnnouncementBanner(text) {
   if (existing) existing.remove();
   const banner = document.createElement('div');
   banner.id = 'announcement-banner';
-  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(135deg,#7c5cfc,#00e5b3);color:#fff;text-align:center;padding:10px 16px;font-size:13px;font-weight:600;z-index:10000;display:flex;align-items:center;justify-content:center;gap:12px;';
-  banner.innerHTML = `📢 ${escapeHtml(text)} <button onclick="this.parentElement.remove()" style="background:rgba(255,255,255,0.2);border:none;color:#fff;border-radius:4px;padding:2px 8px;cursor:pointer;">✕</button>`;
+  // Phantom Dark tokens (see styles.css §25 Banners). z-index matches --z-banner (700).
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:linear-gradient(135deg,var(--accent-dim),var(--accent));color:var(--on-accent);text-align:center;padding:10px 16px;font-size:13px;font-weight:600;z-index:700;display:flex;align-items:center;justify-content:center;gap:12px;';
+  banner.innerHTML = `📢 ${escapeHtml(text)} <button onclick="this.parentElement.remove()" style="background:rgba(4,37,29,0.18);border:none;color:var(--on-accent);border-radius:4px;padding:2px 8px;cursor:pointer;">✕</button>`;
   document.body.insertBefore(banner, document.body.firstChild);
   setTimeout(() => banner.remove?.(), 30000);
 }
