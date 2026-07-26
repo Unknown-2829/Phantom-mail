@@ -56,7 +56,7 @@ export async function onRequestPost(context) {
         const claimToken  = crypto.randomUUID();
         const claimPrefix = `usernameclaim:${normalised}:`;
         const claimKey    = `${claimPrefix}${claimToken}`;
-        await env.EMAILS.put(claimKey, '1', { expirationTtl: 30 });
+        await env.EMAILS.put(claimKey, '1', { expirationTtl: 60 }); // KV minimum TTL is 60s; winner deletes it immediately after commit anyway
 
         const claimList = await env.EMAILS.list({ prefix: claimPrefix });
         if (claimList.keys.length > 1) {
