@@ -12,6 +12,9 @@
  * Phase 2: password strength enforced (min 8 + number/symbol), banned check, fresh session issued
  */
 
+// OWASP-aligned PBKDF2 iteration count for all newly created hashes.
+const PBKDF2_ITERS = 210000;
+
 export async function onRequestPost(context) {
     const { request, env } = context;
 
@@ -80,18 +83,21 @@ export async function onRequestPost(context) {
             return jsonResponse({ error: 'Your account has been suspended. Contact support.' }, 403);
         }
 
-        // ── Hash new password with fresh salt ─────────────────────────────
-        const newSalt = crypto.randomUUID().replace(/-/g, '');
-        const newHash = await hashPassword(newPassword, newSalt);
+        // ── Hash new password with fresh salt at hardened iteration count ──
+        const now         = Date.now();
+        const newSalt     = crypto.randomUUID().replace(/-/g, '');
+        const newHash     = await hashPassword(newPassword, newSalt, PBKDF2_ITERS);
         user.passwordHash = newHash;
         user.salt         = newSalt;
-        user.pwResetAt    = Date.now();
+        user.pbkdf2Iters  = PBKDF2_ITERS;
+        user.pwResetAt    = now;
+        user.pwChangedAt  = now; // revokes every session issued before this reset
         if (!user.authProviders) user.authProviders = [];
         if (!user.authProviders.includes('password')) user.authProviders.push('password');
 
         await env.EMAILS.put(userKey, JSON.stringify(user));
 
-        // ── Issue fresh session ───────────────────────────────────────────
+        // ── Issue fresh session (createdAt >= pwChangedAt so it survives) ──
         const token = generateToken();
         await env.EMAILS.put(`session:${token}`, JSON.stringify({
             username:  userKey,
@@ -123,13 +129,13 @@ export async function onRequestOptions() {
     });
 }
 
-async function hashPassword(password, salt) {
+async function hashPassword(password, salt, iterations = PBKDF2_ITERS) {
     const encoder     = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
         'raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']
     );
     const bits = await crypto.subtle.deriveBits(
-        { name: 'PBKDF2', salt: encoder.encode(salt), iterations: 100000, hash: 'SHA-256' },
+        { name: 'PBKDF2', salt: encoder.encode(salt), iterations, hash: 'SHA-256' },
         keyMaterial, 256
     );
     return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');

@@ -1,0 +1,10 @@
+{
+  "name": "Phantom-mail",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Phantom Mail monorepo. Deployable units live in their own workspaces: email-handler/ (mail-receiving Worker) and admin-worker/ (admin Worker). Each has its own package.json and pinned dependencies; install/deploy from within those directories.",
+  "workspaces": [
+    "email-handler",
+    "admin-worker"
+  ]
+}

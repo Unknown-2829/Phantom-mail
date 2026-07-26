@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "otpauth": "^9.5.1"
+    "otpauth": "9.5.1"
   }
 }

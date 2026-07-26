@@ -1,6 +1,10 @@
 name = "phantom-mail-backend"
 main = "worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
+
+# Workers observability (logs/metrics in the Cloudflare dashboard)
+[observability]
+enabled = true
 
 [vars]
 MODE = "hosted"
@@ -12,7 +16,8 @@ PREMIUM_INBOX_CAP = "30"
 FREE_MAIL_TTL_SEC = "3600"
 GLOBAL_MAIL_TTL_SEC = "1296000" # 15 days
 
-# Public Pusher Credentials
+# Pusher — APP_ID and KEY are identifiers (not secrets); PUSHER_SECRET is the
+# actual secret and is set via `wrangler secret put PUSHER_SECRET`.
 PUSHER_APP_ID = "2179546"
 PUSHER_KEY = "c52890db708136e8b408"
 PUSHER_CLUSTER = "ap2"

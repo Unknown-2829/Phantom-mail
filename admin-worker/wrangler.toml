@@ -1,6 +1,10 @@
 name = "phantom-mail-admin"
 main = "worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2024-09-23"
+
+# Workers observability (logs/metrics in the Cloudflare dashboard)
+[observability]
+enabled = true
 
 # ── Required secrets (set via `wrangler secret put <NAME>`) ──────────────────
 #   ADMIN_PASSWORD     — admin login password (worker fails closed without it)
@@ -16,7 +20,8 @@ RESEND_QUOTA_LIMIT = "3000"
 ADMIN_REPORT_EMAIL = "admin@mail.unknowns.app"
 ADMIN_ALLOWED_ORIGIN = "https://mail.unknowns.app"
 
-# Public Pusher credentials (must match email-handler/wrangler.toml)
+# Pusher identifiers (must match email-handler/wrangler.toml).
+# APP_ID/KEY are identifiers, not secrets; PUSHER_SECRET is the actual secret.
 PUSHER_APP_ID = "2179546"
 PUSHER_KEY = "c52890db708136e8b408"
 PUSHER_CLUSTER = "ap2"

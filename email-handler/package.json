@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "otpauth": "^9.5.1",
-    "postal-mime": "^2.7.5"
+    "otpauth": "9.5.1",
+    "postal-mime": "2.7.5"
   }
 }

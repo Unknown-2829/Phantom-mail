@@ -44,6 +44,18 @@ export async function onRequestGet(context) {
 
     if (user.banned) return json({ valid: false, reason: 'banned' }, 403);
 
+    // ── Session revocation on credential change (A4) ──────────────────────────
+    // A password change/reset stamps user.pwChangedAt. Any session issued BEFORE
+    // that moment is considered revoked so a stolen token dies when the password
+    // changes. The session freshly issued by reset/change has createdAt >=
+    // pwChangedAt and therefore survives. Legacy sessions predating createdAt are
+    // treated as pre-change (createdAt defaults to 0) and revoked if pwChangedAt
+    // is set — the user simply signs in again to mint a fresh session.
+    if (user.pwChangedAt && (session.createdAt || 0) < user.pwChangedAt) {
+        await env.EMAILS.delete(`session:${token}`).catch(() => {});
+        return json({ valid: false, reason: 'revoked' }, 401);
+    }
+
     // Auto-revoke expired premium
     let isPremium = user.isPremium;
     if (isPremium && user.premiumExpiry && user.premiumExpiry < Date.now()) {

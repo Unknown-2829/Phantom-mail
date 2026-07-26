@@ -19,6 +19,12 @@
  *   Purges: saved-address emails+R2, sentidx records, API key, session, user
  */
 
+// PBKDF2 iteration counts. PBKDF2_ITERS is the OWASP-aligned default for fresh
+// hashes; LEGACY_ITERS is the pre-hardening default used to VERIFY when a user
+// record has no pbkdf2Iters field (legacy users must never be locked out).
+const PBKDF2_ITERS = 210000;
+const LEGACY_ITERS = 100000;
+
 export async function onRequestOptions() {
     return new Response(null, {
         status: 204,
@@ -161,25 +167,32 @@ export async function onRequestPatch(context) {
     const hasPassword = !!(user.passwordHash && user.salt);
     if (hasPassword) {
         if (!oldPassword) return json({ error: 'Current password is required' }, 400);
-        const oldHash = await hashPassword(oldPassword, user.salt);
+        // Verify against the iteration count the existing hash was created with.
+        const oldHash = await hashPassword(oldPassword, user.salt, user.pbkdf2Iters || LEGACY_ITERS);
         if (!constantTimeEqual(oldHash, user.passwordHash)) return json({ error: 'Incorrect current password' }, 401);
         if (oldPassword === newPassword) return json({ error: 'New password must be different from the current password' }, 400);
     }
 
+    const now = Date.now();
     const newSalt = crypto.randomUUID().replace(/-/g, '');
-    const newHash = await hashPassword(newPassword, newSalt);
+    const newHash = await hashPassword(newPassword, newSalt, PBKDF2_ITERS);
     user.passwordHash = newHash;
     user.salt = newSalt;
+    user.pbkdf2Iters = PBKDF2_ITERS;
     if (!user.authProviders) user.authProviders = [];
     if (!user.authProviders.includes('password')) user.authProviders.push('password');
-    user.passwordChangedAt = Date.now();
+    user.passwordChangedAt = now;
+    user.pwChangedAt = now; // session.js revokes any session created before this
     await env.EMAILS.put(userKey, JSON.stringify(user));
 
-    // Invalidate all OTHER sessions (keep current one)
-    // Note: full session invalidation via KV list is expensive — log the event instead
+    // Session revocation (A4): pwChangedAt is now set above. session.js treats
+    // any session whose createdAt < pwChangedAt as invalid on its next boot/
+    // validation call, so ALL existing sessions (including the one that made
+    // this request) are revoked the next time the client hits /api/auth/session.
+    // No expensive KV list scan is needed — the epoch check does it lazily.
     console.log(`[profile/patch] Password changed for ${userKey} at ${new Date().toISOString()}`);
 
-    return json({ success: true, message: 'Password updated. All other sessions remain active for 7 days.' });
+    return json({ success: true, message: 'Password updated. For your security, you may need to sign in again on other devices.' });
 }
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
@@ -199,7 +212,7 @@ export async function onRequestDelete(context) {
     if (!password) return json({ error: 'Password is required to delete your account' }, 400);
 
     if (!user.passwordHash || !user.salt) return json({ error: 'No password set — contact support' }, 400);
-    const hash = await hashPassword(password, user.salt);
+    const hash = await hashPassword(password, user.salt, user.pbkdf2Iters || LEGACY_ITERS);
     if (!constantTimeEqual(hash, user.passwordHash)) return json({ error: 'Incorrect password' }, 401);
 
     // ── Purge all saved-address data ──────────────────────────────────────────

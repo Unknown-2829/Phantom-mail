@@ -10,6 +10,9 @@
  *   - No Google OAuth (removed)
  */
 
+// OWASP-aligned PBKDF2 iteration count for all newly created hashes.
+const PBKDF2_ITERS = 210000;
+
 export async function onRequestPost(context) {
     const { request, env } = context;
 
@@ -121,20 +124,23 @@ export async function onRequestPost(context) {
 
         // Hash password with PBKDF2 + random salt (Web Crypto API)
         const salt = crypto.randomUUID().replace(/-/g, '');
-        const passwordHash = await hashPassword(password, salt);
+        const passwordHash = await hashPassword(password, salt, PBKDF2_ITERS);
 
         // Generate pm_free_ API key automatically on signup
         const apiKey = generateApiKey('free');
 
         // Create user
+        const now = Date.now();
         const user = {
             username: userKey,
             displayUsername,
             passwordHash,
             salt,
+            pbkdf2Iters: PBKDF2_ITERS, // iteration count this hash was created with
+            pwChangedAt: now,          // sessions created before this are revoked
             email: email || null,
             emailVerified,
-            createdAt: Date.now(),
+            createdAt: now,
             isPremium: false,
             premiumExpiry: null,
             savedAddresses: [], // renamed from savedEmails — holds address objects
@@ -187,7 +193,7 @@ function isReservedEmail(e) {
         || lower.endsWith('@phant0m.qzz.io');
 }
 
-async function hashPassword(password, salt) {
+async function hashPassword(password, salt, iterations = PBKDF2_ITERS) {
     const encoder = new TextEncoder();
     const keyMaterial = await crypto.subtle.importKey(
         'raw',
@@ -197,7 +203,7 @@ async function hashPassword(password, salt) {
         ['deriveBits']
     );
     const bits = await crypto.subtle.deriveBits(
-        { name: 'PBKDF2', salt: encoder.encode(salt), iterations: 100000, hash: 'SHA-256' },
+        { name: 'PBKDF2', salt: encoder.encode(salt), iterations, hash: 'SHA-256' },
         keyMaterial,
         256
     );

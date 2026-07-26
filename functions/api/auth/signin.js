@@ -14,6 +14,12 @@
  *   - Google OAuth removed — password-only auth
  */
 
+// PBKDF2 iteration counts. NEW_ITERS is the OWASP-aligned default for fresh
+// hashes; LEGACY_ITERS is what pre-hardening users were hashed at and is used
+// when a user record has no pbkdf2Iters field (never lock out legacy users).
+const PBKDF2_ITERS = 210000;
+const LEGACY_ITERS = 100000;
+
 export async function onRequestPost(context) {
     const { request, env } = context;
 
@@ -31,7 +37,7 @@ export async function onRequestPost(context) {
         const user = await env.EMAILS.get(userKey, { type: 'json' });
         if (!user) {
             // Constant-time dummy hash to prevent user enumeration via timing
-            await hashPassword('dummy_password_!!', 'dummy_salt_!!').catch(() => {});
+            await hashPassword('dummy_password_!!', 'dummy_salt_!!', LEGACY_ITERS).catch(() => {});
             return json({ error: 'Invalid username or password' }, 401);
         }
 
@@ -45,9 +51,22 @@ export async function onRequestPost(context) {
             return json({ error: 'Account has no password set. Use password reset.' }, 400);
         }
 
-        const passwordHash = await hashPassword(password, user.salt);
+        // Verify using the iteration count the hash was created with. Legacy
+        // users predate the pbkdf2Iters field, so default to LEGACY_ITERS.
+        const storedIters  = user.pbkdf2Iters || LEGACY_ITERS;
+        const passwordHash = await hashPassword(password, user.salt, storedIters);
         if (!constantTimeEqual(passwordHash, user.passwordHash)) {
             return json({ error: 'Invalid username or password' }, 401);
+        }
+
+        // ── Transparent upgrade-on-login: re-hash at the stronger iteration
+        // count if this account is still on a weaker one. The user record is
+        // persisted below (with lastLogin* fields) so no extra write is needed.
+        if (storedIters < PBKDF2_ITERS) {
+            const newSalt = crypto.randomUUID().replace(/-/g, '');
+            user.passwordHash = await hashPassword(password, newSalt, PBKDF2_ITERS);
+            user.salt         = newSalt;
+            user.pbkdf2Iters  = PBKDF2_ITERS;
         }
 
         // ── Auto-revoke expired premium ───────────────────────────────────────
@@ -127,11 +146,11 @@ export async function onRequestOptions() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function hashPassword(password, salt) {
+async function hashPassword(password, salt, iterations = PBKDF2_ITERS) {
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
     const bits = await crypto.subtle.deriveBits(
-        { name: 'PBKDF2', salt: enc.encode(salt), iterations: 100000, hash: 'SHA-256' },
+        { name: 'PBKDF2', salt: enc.encode(salt), iterations, hash: 'SHA-256' },
         key, 256
     );
     return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');

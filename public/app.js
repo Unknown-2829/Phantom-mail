@@ -237,7 +237,7 @@ async function _bootSession() {
     }
     const data = await res.json();
     if (!data.valid) {
-      if (data.reason === 'expired' || data.reason === 'not_found' || data.reason === 'banned') {
+      if (data.reason === 'expired' || data.reason === 'not_found' || data.reason === 'banned' || data.reason === 'revoked') {
         localStorage.removeItem('authToken');
         localStorage.removeItem('username');
         localStorage.removeItem('isPremium');
@@ -246,6 +246,7 @@ async function _bootSession() {
         initAuthState();
         if (data.reason === 'banned') showToast('🚫 Account suspended.');
         else if (data.reason === 'expired') showToast('🔒 Session expired. Please sign in.');
+        else if (data.reason === 'revoked') showToast('🔒 Signed out — password changed. Please sign in.');
       }
       return;
     }
