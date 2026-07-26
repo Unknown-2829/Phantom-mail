@@ -95,7 +95,13 @@ const INJECTION_PATTERNS = [
     /(\bselect\b.*\bfrom\b|\bunion\b.*\bselect\b|\bor\b.*=.*\bor\b)/i,
     /<script[\s>]/i,
     /javascript:/i,
-    /on\w+\s*=/i,
+    // HTML event-handler injection. Requires a real tag/quote context so benign
+    // values (?sort=on desc, base64 containing "on=", ?name=John onboarding) do
+    // NOT match and auto-ban the IP. Two shapes are treated as hostile:
+    //   1. a quote/backtick immediately before the handler   ("onload=, 'onerror=)
+    //   2. an open tag with the handler somewhere in its attrs (<img … onerror=)
+    /["'`]\s*on\w+\s*=/i,
+    /<[a-z][^>]*\son\w+\s*=/i,
     /\.\.\//,                    // path traversal
     /%00|%0d%0a/i,               // null byte / CRLF injection
     /eval\s*\(/i,
@@ -192,9 +198,20 @@ export async function onRequest(context) {
 
     // ── 5. SQLi / XSS probe detection in query params ───────────────────────
     const queryString = url.search;
-    if (queryString && INJECTION_PATTERNS.some(re => re.test(decodeURIComponent(queryString)))) {
-        await banIp(env, ip, 'injection_probe', 3600);
-        return wafBlock(400, 'Invalid request parameters.', ip);
+    if (queryString) {
+        // decodeURIComponent throws URIError on a malformed percent sequence
+        // (e.g. ?x=%); a raw probe string must never 500 the API. On failure we
+        // scan the raw (still-encoded) query string instead of bailing out.
+        let decodedQuery;
+        try {
+            decodedQuery = decodeURIComponent(queryString);
+        } catch (_) {
+            decodedQuery = queryString;
+        }
+        if (INJECTION_PATTERNS.some(re => re.test(decodedQuery))) {
+            await banIp(env, ip, 'injection_probe', 3600);
+            return wafBlock(400, 'Invalid request parameters.', ip);
+        }
     }
 
     // ── 6. Oversized body guard ───────────────────────────────────────────────
@@ -415,12 +432,15 @@ function applyHeaders(response, { env, pathname = '', rateLimitInfo = null } = {
     const headers = new Headers(response.headers);
     const reqId   = crypto.randomUUID();
 
-    // Security headers
+    // Security headers — kept in sync with public/_headers so an API response and
+    // a page response carry identical framing/permissions policy. X-Frame-Options
+    // is SAMEORIGIN (not DENY) and Permissions-Policy mirrors the pages set;
+    // JSON APIs are never framed anyway, so SAMEORIGIN is safe and audit-clean.
     headers.set('X-Content-Type-Options',  'nosniff');
-    headers.set('X-Frame-Options',         'DENY');
+    headers.set('X-Frame-Options',         'SAMEORIGIN');
     headers.set('X-XSS-Protection',        '1; mode=block');
     headers.set('Referrer-Policy',         'strict-origin-when-cross-origin');
-    headers.set('Permissions-Policy',      'camera=(), microphone=(), geolocation=()');
+    headers.set('Permissions-Policy',      'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
     headers.set('X-WAF',                   'Phantom-Mail-WAF/3.0');
     headers.set('X-Request-ID',            reqId);
 

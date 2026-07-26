@@ -81,9 +81,19 @@ export async function onRequestPost(context) {
         const userChannelSuffix = await sha256Short(session.username);
         const userChannel       = `private-user-${userChannelSuffix}`;
 
-        const currentAddress   = session.currentAddress || null;
-        const addrChannelSuffix = currentAddress ? await sha256Short(currentAddress.toLowerCase().trim()) : null;
-        const inboxChannel      = addrChannelSuffix ? `private-inbox-${addrChannelSuffix}` : null;
+        // Inbox channels: the currently-generated address PLUS every saved
+        // address the user owns (selecting a saved address never updates
+        // session.currentAddress, so it must be authorized here too).
+        const inboxAddresses = new Set();
+        if (session.currentAddress) inboxAddresses.add(session.currentAddress.toLowerCase().trim());
+        for (const s of (user?.savedAddresses || user?.savedEmails || [])) {
+            if (s?.address) inboxAddresses.add(s.address.toLowerCase().trim());
+        }
+        const allowedInboxChannels = new Set(
+            await Promise.all(
+                [...inboxAddresses].map(async a => `private-inbox-${await sha256Short(a)}`)
+            )
+        );
 
         // ── Channel permission check ──────────────────────────────────────
         if (channelName === 'private-system') {
@@ -91,8 +101,8 @@ export async function onRequestPost(context) {
         } else if (channelName === userChannel) {
             // User's own private channel — always allowed
         } else if (channelName.startsWith('private-inbox-')) {
-            if (!inboxChannel || channelName !== inboxChannel) {
-                return jsonResponse({ error: 'Forbidden: inbox channel does not match your current address' }, 403);
+            if (!allowedInboxChannels.has(channelName)) {
+                return jsonResponse({ error: 'Forbidden: inbox channel does not match your current or saved addresses' }, 403);
             }
         } else {
             return jsonResponse({ error: `Forbidden: unknown channel "${channelName}"` }, 403);

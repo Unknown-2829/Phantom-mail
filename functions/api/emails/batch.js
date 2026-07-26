@@ -98,6 +98,21 @@ export async function onRequestPost(context) {
         }
 
         const ttl = resolveTtl(meta);
+        // Build KV put options that preserve the {read,starred,from,subject,receivedAt}
+        // list-metadata (KV replaces metadata on every PUT) alongside the record TTL.
+        const putOpts = (rec) => {
+            const opts = {
+                metadata: {
+                    read: !!rec.read,
+                    starred: !!rec.starred,
+                    from: rec.from,
+                    subject: rec.subject,
+                    receivedAt: rec.receivedAt
+                }
+            };
+            if (ttl) opts.expirationTtl = ttl;
+            return opts;
+        };
         const errors = [];
         let processed = 0;
 
@@ -134,8 +149,11 @@ export async function onRequestPost(context) {
                         if (!emailData) { errors.push({ key, error: 'Not found' }); return; }
                         emailData.starred = value;
                         emailData.starredAt = value ? Date.now() : null;
-                        // Preserve the record's original TTL on re-PUT
-                        await env.EMAILS.put(key, JSON.stringify(emailData), { expirationTtl: ttl });
+                        // Preserve the record's original TTL AND KV list-metadata on
+                        // re-PUT — KV replaces metadata on every write, so omitting it
+                        // wipes the list the cap-enforcement (starred protection) and
+                        // the ETag rely on.
+                        await env.EMAILS.put(key, JSON.stringify(emailData), putOpts(emailData));
                         processed++;
                     } catch (e) {
                         errors.push({ key, error: e.message });
@@ -147,9 +165,21 @@ export async function onRequestPost(context) {
             }
 
             case 'read': {
-                // Mark-as-read is currently client-side only; server-side stub returns success
-                // In the future, we can persist a read-receipt in INBOX_META
-                processed = keys.length;
+                // Mark emails as read — persist read=true and preserve list-metadata.
+                const readOps = keys.map(async key => {
+                    try {
+                        const emailData = await env.EMAILS.get(key, { type: 'json' });
+                        if (!emailData) { errors.push({ key, error: 'Not found' }); return; }
+                        emailData.read = value;
+                        emailData.readAt = value ? Date.now() : null;
+                        await env.EMAILS.put(key, JSON.stringify(emailData), putOpts(emailData));
+                        processed++;
+                    } catch (e) {
+                        errors.push({ key, error: e.message });
+                    }
+                });
+                await Promise.allSettled(readOps);
+                await bumpVersion(env, addrHash);
                 break;
             }
         }

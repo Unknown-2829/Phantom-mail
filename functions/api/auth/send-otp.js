@@ -30,8 +30,30 @@ export async function onRequestPost(context) {
         // return a syntactically valid RANDOM otpToken. It maps to no stored OTP, so
         // any code the client later submits fails through the normal generic path —
         // no observable difference between "exists" and "does not exist".
-        const resetDecoy = () => jsonResponse({ ...RESET_GENERIC, otpToken: generateToken() });
+        //
+        // Timing: the real path performs a KV rate-limit read + write, an OTP write
+        // and a ~300ms Resend HTTP call. Returning the decoy immediately would leak a
+        // fast-vs-slow enumeration oracle despite the identical body. So the decoy
+        // does equivalent KV touches AND spends a comparable amount of time before
+        // responding, closing the timing side-channel.
         const RESET_GENERIC = { success: true, message: 'If an account with a recovery email exists, a code has been sent.' };
+        const resetDecoy = async () => {
+            try {
+                // Mirror the real path's KV work against a per-request decoy key so
+                // rate-limit counters for real targets are never affected.
+                const decoyKey = `otp_decoy:${generateToken().slice(0, 24)}`;
+                const raw = await env.EMAILS.get(decoyKey);
+                const cnt = raw ? parseInt(raw, 10) : 0;
+                await env.EMAILS.put(decoyKey, String(cnt + 1), { expirationTtl: 600 });
+                await env.EMAILS.put(`otp:${generateToken()}`, JSON.stringify({
+                    type: 'password_reset', decoy: true, expiresAt: Date.now() + 600000
+                }), { expirationTtl: 600 });
+                // Match the latency of the Resend send call (~300ms) so exists vs.
+                // does-not-exist are indistinguishable by response time.
+                await new Promise(r => setTimeout(r, 300));
+            } catch (_) {}
+            return jsonResponse({ ...RESET_GENERIC, otpToken: generateToken() });
+        };
 
         if (type === 'email_verify') {
             if (!username) return jsonResponse({ error: 'Username is required' }, 400);
@@ -54,16 +76,22 @@ export async function onRequestPost(context) {
 
         } else if (type === 'password_reset') {
             if (!username) return jsonResponse({ error: 'Username is required' }, 400);
-            let normalised = username.trim().toLowerCase();
-            if (!normalised.includes('@')) normalised = normalised.replace(/\s+/g, '_');
+            // Users are keyed by USERNAME only (user:{username}); there is no
+            // emailidx:{email} → userKey index in the store. The former "email or
+            // username" branch used an @-containing input verbatim as user:{email},
+            // which could never match a real record. Normalise as a username; an
+            // @-containing input simply falls through to the decoy (no user found)
+            // instead of pretending to support an email lookup that doesn't exist.
+            const normalised = username.trim().toLowerCase().replace(/\s+/g, '_');
             userKey = `user:${normalised}`;
             // Always perform the lookup (uniform timing) but never reveal whether
             // the account exists or has a recovery email — return the generic
             // success response in both cases. Only send when a real email exists.
             const user = await env.EMAILS.get(userKey, { type: 'json' });
             if (!user || !user.email) {
-                // Return the SAME shape as a real send (incl. a random otpToken).
-                return resetDecoy();
+                // Return the SAME shape as a real send (incl. a random otpToken),
+                // with equivalent KV work + latency (see resetDecoy).
+                return await resetDecoy();
             }
             targetEmail = user.email.toLowerCase();
 
@@ -90,7 +118,7 @@ export async function onRequestPost(context) {
         if (rateCount >= 3) {
             // For password_reset, don't reveal the account exists via a 429 — return
             // the identical generic+otpToken shape as every other password_reset path.
-            if (type === 'password_reset') return resetDecoy();
+            if (type === 'password_reset') return await resetDecoy();
             return jsonResponse({ error: 'Too many codes requested. Please wait 10 minutes.' }, 429);
         }
 
@@ -139,7 +167,7 @@ export async function onRequestPost(context) {
         if (!emailRes.ok) {
             // password_reset: keep the response uniform (generic + random otpToken)
             // even on a provider outage — same shape as the success path.
-            if (type === 'password_reset') return resetDecoy();
+            if (type === 'password_reset') return await resetDecoy();
             return jsonResponse({ error: 'Failed to send email. Please try again.' }, 500);
         }
 

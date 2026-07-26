@@ -4,6 +4,12 @@
  * Returns { success: true, photoURL }
  */
 
+// Allowlist of safe raster image types. SVG (image/svg+xml) is intentionally
+// excluded — it can carry embedded <script> and would execute when served
+// back from our own origin (stored XSS). Mirrors avatar-upload.js.
+const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const EXT_MAP = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+
 export async function onRequestOptions() {
     return new Response(null, {
         status: 204,
@@ -39,8 +45,8 @@ export async function onRequestPost(context) {
         return jsonResponse({ error: 'No file provided' }, 400);
     }
 
-    if (!file.type.startsWith('image/')) {
-        return jsonResponse({ error: 'Only image files are allowed' }, 400);
+    if (!ALLOWED_TYPES.has(file.type)) {
+        return jsonResponse({ error: 'Only JPEG, PNG, WebP, and GIF images are allowed' }, 400);
     }
 
     if (file.size > 2 * 1024 * 1024) {
@@ -49,8 +55,7 @@ export async function onRequestPost(context) {
 
     // Build a safe R2 key from the user key (strip "user:" prefix)
     const userId = session.username.replace(/^user:/, '').replace(/[^a-zA-Z0-9@._-]/g, '_');
-    const rawExt = (file.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg').replace('svg+xml', 'svg');
-    const safeExt = /^[a-z0-9]{1,5}$/.test(rawExt) ? rawExt : 'jpg';
+    const safeExt = EXT_MAP[file.type] || 'jpg';
     const r2Key = `avatars/${userId}.${safeExt}`;
 
     const buffer = await file.arrayBuffer();

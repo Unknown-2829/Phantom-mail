@@ -143,22 +143,60 @@ export async function onRequestDelete(context) {
     if (!key.startsWith('sent:')) return json({ error: 'Forbidden' }, 403);
     if (address && !key.startsWith(`sent:${address}:`)) return json({ error: 'Forbidden' }, 403);
 
+    // ── Auth (REQUIRED) ──────────────────────────────────────────────────────
+    // Sent-record keys are `sent:{from}:{timestamp}` — guessable for a known
+    // address. Require a valid session and verify the caller owns this record
+    // before deleting, otherwise anyone could destroy another user's sent mail.
+    const authHeader = request.headers.get('Authorization') || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (!token) return json({ error: 'Sign in to delete sent mail.' }, 401);
+
+    let session = null;
     try {
+        session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
+    } catch (_) { session = null; }
+    if (!session || session.expiresAt <= Date.now()) {
+        return json({ error: 'Session expired' }, 401);
+    }
+
+    try {
+        // Resolve the owner of this sent record. Prefer the record's own
+        // from/owner; fall back to the user index (sentidx:user:{username}:).
+        const record = await env.EMAILS.get(key, { type: 'json' }).catch(() => null);
+        let isOwner = false;
+
+        if (idxKey && idxKey.startsWith(`sentidx:user:${session.username}:`)) {
+            // The index key is namespaced by username — only the owner can hold it.
+            const mapped = await env.EMAILS.get(idxKey, { type: 'text' }).catch(() => null);
+            if (mapped === key) isOwner = true;
+        }
+
+        if (!isOwner && record) {
+            // Match the sent record's from-address against the caller's ownership:
+            // the address must be claimed/saved by this session's user.
+            const fromNorm = String(record.from || '').toLowerCase().trim();
+            if (fromNorm) {
+                const addrHash = await sha256Hex(fromNorm);
+                const metaStr  = await env.INBOX_META.get(`meta:${addrHash}`);
+                if (metaStr) {
+                    let meta = {};
+                    try { meta = JSON.parse(metaStr); } catch (_) {}
+                    const ownerVal = meta.owner || meta.claimedBy;
+                    if (ownerVal && normalizeUser(ownerVal) === normalizeUser(session.username)) {
+                        isOwner = true;
+                    }
+                }
+            }
+        }
+
+        if (!isOwner) {
+            return json({ error: 'You can only delete your own sent mail.' }, 403);
+        }
+
         await env.EMAILS.delete(key);
 
-        if (idxKey && idxKey.startsWith('sentidx:user:')) {
-            const authHeader = request.headers.get('Authorization') || '';
-            const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-            if (token) {
-                try {
-                    const session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
-                    if (session && session.expiresAt > Date.now()) {
-                        if (idxKey.startsWith(`sentidx:user:${session.username}:`)) {
-                            await env.EMAILS.delete(idxKey);
-                        }
-                    }
-                } catch (_) {}
-            }
+        if (idxKey && idxKey.startsWith(`sentidx:user:${session.username}:`)) {
+            await env.EMAILS.delete(idxKey).catch(() => {});
         }
 
         return json({ success: true });

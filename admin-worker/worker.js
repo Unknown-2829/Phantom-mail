@@ -57,6 +57,11 @@ const KV_ANNOUNCEMENT   = 'announcement:active';
 const USER_SCAN_CAP     = 2000;              // max user keys scanned for stats
 const PLAN_DAYS         = { monthly: 30, annual: 365 };
 
+// ── Admin login brute-force lockout ──────────────────────────────────────────
+const LOGIN_FAIL_WINDOW_SEC = 600;   // 10-min rolling window for counting failures
+const LOGIN_LOCKOUT_MAX     = 5;     // failures in the window before lockout kicks in
+const LOGIN_LOCKOUT_SEC     = 900;   // 15-min hard cooldown once locked out
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Small helpers — crypto / formatting
 // ─────────────────────────────────────────────────────────────────────────────
@@ -341,6 +346,19 @@ async function handleLogin(request, env, ctx, clientIp) {
         return json(env, { error: 'Admin worker not configured (ADMIN_PASSWORD secret missing)' }, 503);
     }
 
+    // ── Hard lockout: once an IP hits LOGIN_LOCKOUT_MAX failures within the
+    // window, every login attempt is rejected with 429 for LOGIN_LOCKOUT_SEC —
+    // no password/TOTP work is done, so the cooldown can't be brute-forced away.
+    const lockoutKey = `admin_lockout:${clientIp}`;
+    const lockedUntil = parseInt(await env.INBOX_META.get(lockoutKey) || '0', 10);
+    if (lockedUntil > Date.now()) {
+        const retryAfter = Math.ceil((lockedUntil - Date.now()) / 1000);
+        return json(env, {
+            error: `Too many failed login attempts. Try again in ${Math.ceil(retryAfter / 60)} minute(s).`,
+            retryAfter
+        }, 429);
+    }
+
     const { password, totpCode } = await readJson(request);
     const passHash     = await hashPassword(password || '');
     const expectedHash = await hashPassword(env.ADMIN_PASSWORD);
@@ -349,14 +367,27 @@ async function handleLogin(request, env, ctx, clientIp) {
         // Per-IP brute-force tracking (10-minute buckets)
         const failKey = `admin_fails:${clientIp}:${Math.floor(Date.now() / 600000)}`;
         const fails = parseInt(await env.INBOX_META.get(failKey) || '0', 10) + 1;
-        await env.INBOX_META.put(failKey, String(fails), { expirationTtl: 600 });
-        if (fails >= 5) {
+        await env.INBOX_META.put(failKey, String(fails), { expirationTtl: LOGIN_FAIL_WINDOW_SEC });
+        if (fails >= LOGIN_LOCKOUT_MAX) {
+            // Trip the cooldown: subsequent attempts short-circuit above with 429.
+            const until = Date.now() + LOGIN_LOCKOUT_SEC * 1000;
+            await env.INBOX_META.put(lockoutKey, String(until), { expirationTtl: LOGIN_LOCKOUT_SEC });
             ctx.waitUntil(sendAlertEmail(env,
-                '🚨 WARNING: 5+ Failed Admin Logins Detected',
-                `<p>Multiple failed admin login attempts from IP: <strong>${clientIp}</strong></p>`));
+                '🚨 WARNING: Admin Login Locked Out',
+                `<p>${LOGIN_LOCKOUT_MAX}+ failed admin login attempts from IP: <strong>${clientIp}</strong>. ` +
+                `That IP is now blocked from logging in for ${Math.round(LOGIN_LOCKOUT_SEC / 60)} minutes.</p>`));
+            return json(env, {
+                error: `Too many failed login attempts. Try again in ${Math.round(LOGIN_LOCKOUT_SEC / 60)} minute(s).`,
+                retryAfter: LOGIN_LOCKOUT_SEC
+            }, 429);
         }
         return json(env, { error: 'Invalid admin credentials' }, 401);
     }
+
+    // Successful password (+ any TOTP below): clear the failure counters so a
+    // legitimate admin isn't penalised by earlier typos in the same window.
+    await env.INBOX_META.delete(lockoutKey).catch(() => {});
+    await env.INBOX_META.delete(`admin_fails:${clientIp}:${Math.floor(Date.now() / 600000)}`).catch(() => {});
 
     // TOTP — required whenever a secret is configured (KV first, then env)
     const { secret: totpSecret } = await resolveTotpSecret(env);

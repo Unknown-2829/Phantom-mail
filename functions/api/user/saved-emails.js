@@ -31,6 +31,11 @@ function domainKey(domain) {
     return domain.split('.')[0];
 }
 
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
 export async function onRequest(context) {
     const { request, env } = context;
 
@@ -96,6 +101,13 @@ async function handlePost(request, user, env, username, isPremium, maxSaved) {
     const metaStr  = await env.INBOX_META.get(`meta:${addrHash}`);
     let meta = {};
     try { meta = JSON.parse(metaStr || '{}'); } catch (_) {}
+
+    // Ownership guard: never overwrite another account's claim.
+    const existingOwner = meta.owner || meta.claimedBy;
+    if (existingOwner && normalizeUser(existingOwner) !== normalizeUser(username)) {
+        return jsonResponse({ error: 'This address is already claimed by another account.' }, 409);
+    }
+
     meta.isSaved   = true;
     meta.isPremium = isPremium;
     meta.savedAt   = Date.now();

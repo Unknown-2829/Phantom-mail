@@ -225,7 +225,7 @@ export async function onRequestPost(context) {
 
   if (rateData.count >= dailyLimit) {
     return jsonResponse({
-      error: `Daily send limit reached (${dailyLimit}/day). ${isPremium ? '' : 'Upgrade to Premium for 50/day.'}`
+      error: `Daily send limit reached (${dailyLimit}/day). ${isPremium ? '' : 'Upgrade to Premium for 25/day.'}`
     }, 429);
   }
 
@@ -247,7 +247,7 @@ export async function onRequestPost(context) {
   if (slotCount > dailyLimit) {
     await env.EMAILS.delete(slotKey).catch(() => {});
     return jsonResponse({
-      error: `Daily send limit reached (${dailyLimit}/day). ${isPremium ? '' : 'Upgrade to Premium for 50/day.'}`
+      error: `Daily send limit reached (${dailyLimit}/day). ${isPremium ? '' : 'Upgrade to Premium for 25/day.'}`
     }, 429);
   }
 

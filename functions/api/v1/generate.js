@@ -34,6 +34,24 @@ async function sha256Hex(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
+// True if meta:{hash} is protected (claimed/saved) by a DIFFERENT user than
+// the API key's owner. Prevents a Pro key squatting an in-use address.
+async function isProtectedByAnother(env, hash, keyOwner) {
+    const metaStr = await env.INBOX_META?.get(`meta:${hash}`);
+    if (!metaStr) return false;
+    let meta = {};
+    try { meta = JSON.parse(metaStr); } catch (_) { return false; }
+    const protectedAddr = meta.isSaved === true || !!meta.owner || !!meta.claimedBy;
+    if (!protectedAddr) return false;
+    const ownerVal = meta.owner || meta.claimedBy;
+    return normalizeUser(ownerVal) !== normalizeUser(keyOwner);
+}
+
 export async function onRequestOptions() {
     return new Response(null, {
         status: 204,
@@ -112,6 +130,11 @@ export async function onRequestPost(context) {
         if (exists) {
             return json({ error: 'Address already taken on that domain. Try a different username.' }, 409, rlHeaders);
         }
+        // Deny-of-address guard: never mint an address that is claimed/saved
+        // by another account (dedup markers expire before saved inboxes do).
+        if (await isProtectedByAnother(env, hash, keyData.userId)) {
+            return json({ error: 'Address unavailable — it is claimed by another account.' }, 409, rlHeaders);
+        }
     } else {
         // Random generation with collision avoidance
         let attempts = 0;
@@ -122,7 +145,7 @@ export async function onRequestPost(context) {
             email      = `${adj}${noun}${num}@${chosenDomain}`;
             const hash = await sha256Hex(email);
             const exists = await env.INBOX_META?.get(`dedup:${hash}`);
-            if (!exists) break;
+            if (!exists && !(await isProtectedByAnother(env, hash, keyData.userId))) break;
             attempts++;
         } while (attempts < 10);
     }

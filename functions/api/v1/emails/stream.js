@@ -56,6 +56,11 @@ function domainKey(domain) {
     return domain.split('.')[0];
 }
 
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
 function toMs(receivedAt) {
     if (!receivedAt) return 0;
     return typeof receivedAt === 'string' ? new Date(receivedAt).getTime() : receivedAt;
@@ -75,7 +80,7 @@ function project(keyName, data) {
         archived:    meta.archived === true,
         hasHtml:     !!htmlBody,
         hasText:     !!textBody,
-        attachments: (meta.attachments || []).map(a => ({ name: a.name, size: a.size, type: a.type })),
+        attachments: (meta.attachments || []).map(a => ({ name: a.filename, size: a.size, type: a.mimeType })),
         snippet:     textBody ? textBody.slice(0, 100) : (htmlBody ? stripTags(htmlBody).slice(0, 100) : '')
     };
 }
@@ -146,6 +151,25 @@ export async function onRequestGet(context) {
         return json({ error: `Domain must be one of: ${ALLOWED_DOMAINS.join(', ')}` }, 403, rlHeaders);
     }
 
+    const addrHash = await sha256Hex(address);
+    const prefix   = `email:${domainKey(domain)}:${addrHash}:`;
+
+    // ── Ownership gate: an API key must not stream another account's ──────────
+    // protected (claimed/saved) inbox. Compare normalized userId vs owner.
+    // (Same logic as GET /api/v1/emails — must run BEFORE charging a credit.)
+    const metaStr = await env.INBOX_META.get(`meta:${addrHash}`);
+    if (metaStr) {
+        let meta = {};
+        try { meta = JSON.parse(metaStr); } catch (_) { meta = {}; }
+        const protectedAddr = meta.isSaved === true || !!meta.owner || !!meta.claimedBy;
+        if (protectedAddr) {
+            const ownerVal = meta.owner || meta.claimedBy;
+            if (normalizeUser(keyData.userId) !== normalizeUser(ownerVal)) {
+                return json({ error: 'This address is claimed by another account.' }, 403, rlHeaders);
+            }
+        }
+    }
+
     // ── Count this connection as 1 receive credit ────────────────────────────
     await env.INBOX_META?.put(usageKey, String(used + 1), { expirationTtl: 86400 });
     rlHeaders['X-RateLimit-Remaining'] = String(Math.max(0, dailyLimit - (used + 1)));
@@ -155,9 +179,6 @@ export async function onRequestGet(context) {
         keyData.lastUsed = Date.now();
         await env.API_KEYS.put(apiKey, JSON.stringify(keyData)).catch(() => {});
     }
-
-    const addrHash = await sha256Hex(address);
-    const prefix   = `email:${domainKey(domain)}:${addrHash}:`;
 
     // ── SSE stream ───────────────────────────────────────────────────────────
     const encoder = new TextEncoder();

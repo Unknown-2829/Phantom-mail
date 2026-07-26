@@ -86,6 +86,26 @@ export async function onRequestPost(context) {
         }, 403);
     }
 
+    // ── From-ownership ─────────────────────────────────────────────────────
+    // Domain validation alone lets a Pro key send AS any user's address on our
+    // domains (with our SPF/DKIM behind it). Resolve the key's owning user and
+    // require the From address to be one they own — the current address or a
+    // saved one — mirroring the ownsFrom check in /api/send.
+    const ownerUser = keyData.userId
+        ? await env.EMAILS.get(keyData.userId, { type: 'json' }).catch(() => null)
+        : null;
+    if (!ownerUser) {
+        return jsonResponse({ error: 'You can only send from an address you own.' }, 403);
+    }
+    const fromNorm       = from.toLowerCase().trim();
+    const currentNorm    = (ownerUser.currentAddress || '').toLowerCase().trim();
+    const savedAddresses = ownerUser.savedAddresses || ownerUser.savedEmails || [];
+    const ownsFrom = fromNorm === currentNorm ||
+        savedAddresses.some(e => (e.address || '').toLowerCase().trim() === fromNorm);
+    if (!ownsFrom) {
+        return jsonResponse({ error: 'You can only send from an address you own.' }, 403);
+    }
+
     // ── Validate recipients ────────────────────────────────────────────────
     const recipients = Array.isArray(to) ? to : [to];
     if (recipients.length === 0 || recipients.length > 5) {

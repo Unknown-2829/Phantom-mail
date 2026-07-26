@@ -166,7 +166,7 @@ export async function onRequestGet(context) {
                     archived:    meta.archived === true,
                     hasHtml:     !!htmlBody,
                     hasText:     !!textBody,
-                    attachments: (meta.attachments || []).map(a => ({ name: a.name, size: a.size, type: a.type })),
+                    attachments: (meta.attachments || []).map(a => ({ name: a.filename, size: a.size, type: a.mimeType })),
                     snippet:     textBody ? textBody.slice(0, 100) : (htmlBody ? stripTags(htmlBody).slice(0, 100) : '')
                 };
             })

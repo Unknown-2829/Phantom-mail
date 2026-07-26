@@ -7,6 +7,7 @@ const PREMIUM_INBOX_CAP = 30;
 const FREE_TTL_SEC     = 3600;       // 1 hour
 const SAVED_TTL_SEC    = 1296000;    // 15 days
 const MAX_ATT_BYTES    = 10 * 1024 * 1024; // 10 MB per attachment
+const RAW_SOURCE_MAX_BYTES = 64 * 1024;    // store <=64KB of true MIME source
 const FREE_RATE_LIMIT  = 50;         // emails/hr (free)
 const PREM_RATE_LIMIT  = 1000;       // emails/hr (premium)
 const FWD_RATE_LIMIT   = 10;         // forwards/hr per address (silent skip past limit)
@@ -28,6 +29,25 @@ function domainKey(domain) {
     if (domain === 'unkn0wn.qzz.io') return 'unkn0wn';
     if (domain === 'phant0m.qzz.io') return 'phant0m';
     return domain.split('.')[0];
+}
+
+/**
+ * Sanitise a MIME filename before interpolating it into an R2 object key.
+ * MIME filenames come straight from the message and can contain path separators,
+ * newlines, control characters, or be arbitrarily long — all of which would
+ * corrupt the R2 key or its ownership prefix. Strip anything unsafe, collapse to
+ * '_', and cap the length.
+ */
+function safeFilename(name) {
+    const raw = String(name || 'attachment')
+        .replace(/[\/\\]/g, '_')                   // path separators
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\x00-\x1f\x7f]/g, '')         // control chars + newlines
+        .replace(/[^A-Za-z0-9._-]/g, '_')        // anything else unsafe -> _
+        .replace(/_+/g, '_')                     // collapse runs
+        .replace(/^[._]+/, '');                // no leading dot/underscore
+    const cleaned = raw.slice(0, 80);
+    return cleaned || 'attachment';
 }
 
 /**
@@ -350,6 +370,12 @@ export default {
         const dKey       = domainKey(domain);
         const addressHash = await sha256Hex(recipient);
 
+        // The entire ingest path is wrapped so a PostalMime parse failure, an R2
+        // outage, or a KV error can never throw out of email() — Email Routing
+        // treats an uncaught throw as a delivery failure (mail lost). On error we
+        // best-effort persist a minimal stub record so the message is never lost,
+        // and we never rethrow.
+        try {
         // 2. Fetch address metadata (plan, saved status, ownership)
         let isPremium    = false;
         let isSaved      = false;
@@ -382,6 +408,15 @@ export default {
         const parser  = new PostalMime();
         const parsed  = await parser.parse(rawBuf);
 
+        // Keep a bounded slice of the true MIME source (<=64KB) so "view source"
+        // can show the real bytes; larger messages fall back to reconstruction.
+        let rawSource = '';
+        try {
+            if (rawBuf.byteLength <= RAW_SOURCE_MAX_BYTES) {
+                rawSource = new TextDecoder('utf-8', { fatal: false }).decode(rawBuf);
+            }
+        } catch (_) { rawSource = ''; }
+
         // Detect special email types
         const hasTnef     = parsed.attachments?.some(a => a.filename?.toLowerCase() === 'winmail.dat');
         const hasCalendar = parsed.attachments?.some(a =>
@@ -396,7 +431,7 @@ export default {
         for (const att of (parsed.attachments || [])) {
             if (!att.content || att.content.byteLength > MAX_ATT_BYTES) continue;
             const attId  = `att_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-            const attKey = `${dKey}/${addressHash}/${attId}_${att.filename || 'attachment'}`;
+            const attKey = `${dKey}/${addressHash}/${attId}_${safeFilename(att.filename)}`;
             await env.ATTACHMENTS.put(attKey, att.content, {
                 httpMetadata: { contentType: att.mimeType || 'application/octet-stream' }
             });
@@ -414,13 +449,18 @@ export default {
         const existing  = await env.EMAILS.list({ prefix: listPrefix });
 
         if (existing.keys.length >= cap) {
-            const sorted   = existing.keys.sort((a, b) => a.name.localeCompare(b.name));
+            const sorted    = existing.keys.sort((a, b) => a.name.localeCompare(b.name));
             const deletable = sorted.filter(k => !k.metadata?.starred);
-            if (deletable.length > 0) {
-                const oldest = deletable[0];
+            // Delete ALL non-starred oldest beyond the cap in one pass so an inbox
+            // that is several over cap (plan downgrade, cap change, backlog) converges
+            // immediately instead of dripping one message per inbound until cron.
+            // We are about to insert one new record, so aim for (cap - 1) survivors.
+            const overflow = existing.keys.length - (cap - 1);
+            const toDelete = overflow > 0 ? deletable.slice(0, overflow) : [];
+            for (const victim of toDelete) {
                 // Also remove R2 attachments of the purged email
                 try {
-                    const oldRaw = await env.EMAILS.get(oldest.name);
+                    const oldRaw = await env.EMAILS.get(victim.name);
                     if (oldRaw) {
                         const oldMail = JSON.parse(oldRaw);
                         for (const att of (oldMail.attachments || [])) {
@@ -428,7 +468,7 @@ export default {
                         }
                     }
                 } catch (_) {}
-                await env.EMAILS.delete(oldest.name);
+                await env.EMAILS.delete(victim.name);
             }
         }
 
@@ -446,6 +486,7 @@ export default {
             textBody: parsed.text || '',
             headers: parsed.headers || [],
             attachments: attachmentsMeta,
+            rawSource,                    // bounded (<=64KB) true MIME source, '' if too large
             hasTnef:     !!hasTnef,
             hasCalendar: !!hasCalendar,
             isEncrypted: !!isEncrypted,
@@ -490,6 +531,44 @@ export default {
         ctx.waitUntil(forwardEmail(env, recipient, addressHash, message.from, parsed, attachmentsMeta.length > 0));
 
         console.log(`[Email] Stored ${emailId} for ${recipient} (ttl=${ttl}s, premium=${isPremium}, saved=${isSaved})`);
+        } catch (err) {
+            console.error('[Email] handler failed, storing stub record:', err?.message || err);
+            // Best-effort stub so the message is never lost. Uses only values that
+            // are always available (no PostalMime parse required).
+            try {
+                const now     = Date.now();
+                const emailId = `msg_${now}_${Math.random().toString(36).slice(2, 9)}`;
+                const kvKey   = `email:${dKey}:${addressHash}:${now}:${emailId}`;
+                const subject = 'Undelivered message (recovery stub)';
+                const stub = {
+                    id: emailId, key: kvKey,
+                    to: recipient, from: message.from || '',
+                    subject,
+                    htmlBody: '',
+                    textBody: 'This message could not be fully processed and was stored as a minimal recovery stub.',
+                    headers: [],
+                    attachments: [],
+                    rawSource: '',
+                    hasTnef: false, hasCalendar: false, isEncrypted: false,
+                    read: false, starred: false,
+                    domain, domainKey: dKey,
+                    isStub: true,
+                    receivedAt: new Date(now).toISOString()
+                };
+                await env.EMAILS.put(kvKey, JSON.stringify(stub), {
+                    expirationTtl: SAVED_TTL_SEC,
+                    metadata: {
+                        read: false, starred: false,
+                        from: message.from || '',
+                        subject,
+                        receivedAt: stub.receivedAt
+                    }
+                });
+            } catch (stubErr) {
+                console.error('[Email] stub persist also failed:', stubErr?.message || stubErr);
+            }
+            // Never rethrow — a throw here is treated as a delivery failure.
+        }
     },
 
     // ── Cron Trigger (every 6 hours) ────────────────────────────────────────────

@@ -133,8 +133,20 @@ export async function onRequestPatch(context) {
 
         // Preserve the record's original TTL on re-PUT (1h temp / 15d saved).
         // Derive from meta.isSaved/isPremium (gate.meta) so we don't reset expiry.
+        // Re-write the KV list-metadata too — KV replaces metadata on every PUT,
+        // so omitting it wipes the {read,starred,from,subject,receivedAt} list the
+        // cap-enforcement (starred protection) and the ETag rely on.
         const ttl = resolveTtl(gate.meta);
-        const putOpts = ttl ? { expirationTtl: ttl } : undefined;
+        const putOpts = {
+            metadata: {
+                read: !!data.read,
+                starred: !!data.starred,
+                from: data.from,
+                subject: data.subject,
+                receivedAt: data.receivedAt
+            }
+        };
+        if (ttl) putOpts.expirationTtl = ttl;
         await env.EMAILS.put(key, JSON.stringify(data), putOpts);
 
         // Bump per-address version counter so pollers see the change

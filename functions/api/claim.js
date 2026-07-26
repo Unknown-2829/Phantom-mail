@@ -27,6 +27,11 @@ async function sha256Hex(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
 export async function onRequestPost(context) {
     const { request, env } = context;
 
@@ -95,6 +100,12 @@ export async function onRequestPost(context) {
         const metaStr  = await env.INBOX_META.get(`meta:${addrHash}`);
         let meta = {};
         try { meta = JSON.parse(metaStr || '{}'); } catch (_) {}
+
+        // Ownership guard: never overwrite another account's claim.
+        const existingOwner = meta.owner || meta.claimedBy;
+        if (existingOwner && normalizeUser(existingOwner) !== normalizeUser(session.username)) {
+            return jsonResponse({ error: 'This address is already claimed by another account.' }, 409);
+        }
 
         meta.claimedBy   = session.username;
         meta.owner       = session.username; // ownership contract: session.username VERBATIM ('user:{normalized}')

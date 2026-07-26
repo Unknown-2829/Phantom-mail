@@ -90,21 +90,72 @@ export async function onRequestGet(context) {
         const emailData = await env.EMAILS.get(key, { type: 'json' });
         if (!emailData) return textResponse('Not found', 404);
 
-        // Prefer rawSource, fall back to htmlBody or plain body
-        const rawSource = emailData.rawSource || emailData.htmlBody || emailData.body || '';
+        // The ingest worker does not persist the true MIME source. If a bounded
+        // rawSource was stored, serve it; otherwise RECONSTRUCT a minimal RFC 822
+        // view from the stored headers + text/html bodies. This is a reconstruction,
+        // NOT the byte-for-byte original — served inline as text, not as a .eml.
+        const source = emailData.rawSource
+            ? String(emailData.rawSource)
+            : reconstructRfc822(emailData);
 
-        return new Response(rawSource, {
+        return new Response(source, {
             status: 200,
             headers: {
                 'Content-Type': 'text/plain; charset=utf-8',
                 'Cache-Control': 'no-store',
                 'Access-Control-Allow-Origin': '*',
-                'Content-Disposition': `inline; filename="email-${key.split(':').pop()}.eml"`
+                'Content-Disposition': 'inline'
             }
         });
     } catch (e) {
         return textResponse(e.message || 'Internal error', 500);
     }
+}
+
+/**
+ * Reconstruct a minimal RFC 822 view from stored fields.
+ * The ingest worker stores parsed.headers as [{ key, value }, ...] plus
+ * textBody/htmlBody. This is a readable approximation of the source, clearly
+ * a reconstruction (a banner + preserved headers + bodies) — not the original.
+ */
+function reconstructRfc822(email) {
+    const lines = [];
+    lines.push('X-Phantom-Note: Reconstructed view — not the original MIME source');
+
+    const headers = Array.isArray(email.headers) ? email.headers : [];
+    if (headers.length) {
+        for (const h of headers) {
+            const name = h?.key || h?.name;
+            const value = h?.value;
+            if (name && value !== undefined && value !== null) {
+                lines.push(`${name}: ${String(value).replace(/\r?\n/g, ' ')}`);
+            }
+        }
+    } else {
+        // Fall back to top-level fields if no header array was stored
+        if (email.from)       lines.push(`From: ${email.from}`);
+        if (email.to)         lines.push(`To: ${email.to}`);
+        if (email.subject)    lines.push(`Subject: ${email.subject}`);
+        if (email.receivedAt) lines.push(`Date: ${email.receivedAt}`);
+    }
+
+    const text = email.textBody || email.body || '';
+    const html = email.htmlBody || '';
+
+    // Blank line separates headers from body per RFC 822
+    lines.push('');
+    if (text) {
+        lines.push('--- text/plain ---');
+        lines.push(text);
+    }
+    if (html) {
+        if (text) lines.push('');
+        lines.push('--- text/html ---');
+        lines.push(html);
+    }
+    if (!text && !html) lines.push('(no body content)');
+
+    return lines.join('\r\n');
 }
 
 function textResponse(msg, status = 200) {

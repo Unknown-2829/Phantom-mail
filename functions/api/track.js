@@ -17,9 +17,15 @@
  *   - Tracking IDs that don't map to a known sent record are silently ignored
  */
 
-// Known email client proxy / prefetch UAs — don't count these as real opens
+// Known email client proxy / prefetch UAs — don't count these as real opens.
+// NOTE: 'applewebkit' and 'iphone' were removed — they appear in the UA of
+// Chrome, Edge, Safari, Opera and every iOS browser, so filtering on them
+// discarded almost all real human opens (only Firefox opens survived). Apple
+// Mail Privacy Protection prefetches through Apple/Google image proxies that
+// report GoogleImageProxy (matched below), so MPP is still filtered without
+// nuking the entire WebKit/iPhone user population.
 const BOT_UA_PATTERNS = [
-    'googleimageproxy', 'iphone', 'applewebkit',   // Apple MPP
+    'googleimageproxy',   // Apple MPP + Gmail image prefetch proxy
     'msnbot', 'bingbot', 'googlebot',
     'yahoo! slurp', 'duckduckbot', 'baiduspider',
     'yandexbot', 'sogou', 'exabot', 'facebot',

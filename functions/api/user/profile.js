@@ -207,8 +207,9 @@ export async function onRequestDelete(context) {
     for (const saved of savedAddresses) {
         try {
             const addr    = saved.address || saved;
+            const normAddr = String(addr).toLowerCase().trim();
             const addrHash = await sha256Hex(addr);
-            const domain   = addr.split('@')[1] || '';
+            const domain   = normAddr.split('@')[1] || '';
             const dKey     = domainKey(domain);
             const prefix   = `email:${dKey}:${addrHash}:`;
             const list     = await env.EMAILS.list({ prefix });
@@ -226,17 +227,33 @@ export async function onRequestDelete(context) {
                 }
                 await env.EMAILS.delete(k.name).catch(() => {});
             }
+            // Delete the forwarding rule so inbound mail is no longer forwarded to
+            // the (now-deleted) user's external mailbox. Key shape matches
+            // user/forwarding.js: forward:{normalizedAddress}.
+            await env.EMAILS.delete(`forward:${normAddr}`).catch(() => {});
             await env.INBOX_META?.delete(`meta:${addrHash}`).catch(() => {});
             await env.INBOX_META?.delete(`dedup:${addrHash}`).catch(() => {});
         } catch (_) {}
     }
 
-    // ── Purge sent email index ────────────────────────────────────────────────
+    // ── Purge sent email index + tracking keys ────────────────────────────────
+    // Each sentidx entry points to a sent:{from}:{ts} record; that record carries
+    // the Resend id and trackingId that back the track:{id}/sentid:{id} lookup
+    // keys. Best-effort clean all of them so no orphaned tracking data survives.
     try {
         const sentIdx = await env.EMAILS.list({ prefix: `sentidx:user:${userKey}:`, limit: 500 });
         for (const k of sentIdx.keys) {
             const sentKey = await env.EMAILS.get(k.name).catch(() => null);
-            if (sentKey) await env.EMAILS.delete(sentKey).catch(() => {});
+            if (sentKey) {
+                try {
+                    const rec = await env.EMAILS.get(sentKey, { type: 'json' }).catch(() => null);
+                    if (rec) {
+                        if (rec.trackingId) await env.EMAILS.delete(`track:${rec.trackingId}`).catch(() => {});
+                        if (rec.id)         await env.EMAILS.delete(`sentid:${rec.id}`).catch(() => {});
+                    }
+                } catch (_) {}
+                await env.EMAILS.delete(sentKey).catch(() => {});
+            }
             await env.EMAILS.delete(k.name).catch(() => {});
         }
     } catch (_) {}

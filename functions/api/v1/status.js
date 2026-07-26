@@ -43,10 +43,21 @@ export async function onRequestGet(context) {
     //   generate.js → api_usage:gen:{key}:{day}
     //   emails.js   → api_usage:read:{key}:{day}
     //   send.js     → api_usage:v1send:{key}:{day}
+    // Safe reads: `env.INBOX_META?.get(...)` yields `undefined` when the binding
+    // is absent, and calling `.then()` on that would throw a TypeError. Await the
+    // (possibly undefined) result first, then parse — never chain off the optional.
+    const readCounter = async (key) => {
+        try {
+            const v = await env.INBOX_META?.get(key);
+            return parseInt(v || '0', 10) || 0;
+        } catch (_) {
+            return 0;
+        }
+    };
     const [genUsed, receiveUsed, sendUsed] = await Promise.all([
-        env.INBOX_META?.get(`api_usage:gen:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0),
-        env.INBOX_META?.get(`api_usage:read:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0),
-        env.INBOX_META?.get(`api_usage:v1send:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0)
+        readCounter(`api_usage:gen:${apiKey}:${today}`),
+        readCounter(`api_usage:read:${apiKey}:${today}`),
+        readCounter(`api_usage:v1send:${apiKey}:${today}`)
     ]);
 
     return jsonResponse({

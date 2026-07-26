@@ -2,12 +2,19 @@
  * Phantom Mail — Service Worker
  * Strategy:
  *   - '/' + navigations : network-first, cache fallback, then /offline.html
- *   - same-origin static: cache-first (css/js/png/svg/woff2)
+ *   - same-origin static: stale-while-revalidate (css/js/png/svg/woff2) —
+ *                         serve cache instantly, refresh it from the network in
+ *                         the background so the NEXT load already has the update.
+ *                         This is what lets a deploy actually reach returning
+ *                         users instead of pinning them to the first-cached build.
  *   - /api/*            : NEVER cached — bypassed entirely
  * Push notifications + notification click handling included.
  */
 
-const CACHE = 'phantom-v2.0.0';
+// Bump this on every deploy that ships new static assets. It both busts the old
+// cache (activate purges non-matching names) AND is the version returning users
+// converge onto via the stale-while-revalidate refresh below.
+const CACHE = 'phantom-v2.1.0';
 
 const PRECACHE = [
     '/',
@@ -69,20 +76,28 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // Cache-first for same-origin static assets
+    // Stale-while-revalidate for same-origin static assets: return the cached
+    // copy immediately (fast), but ALWAYS kick off a background fetch that
+    // refreshes the cache, so the next navigation picks up freshly deployed
+    // app.js / styles.css without waiting for a CACHE bump.
     if (url.origin === self.location.origin && STATIC_EXT.test(url.pathname)) {
         event.respondWith(
-            caches.match(request).then(cached => {
-                if (cached) return cached;
-                return fetch(request).then(response => {
-                    if (response && response.ok) {
-                        const copy = response.clone();
-                        caches.open(CACHE).then(cache => cache.put(request, copy));
-                    }
-                    return response;
-                });
-            })
+            caches.open(CACHE).then(cache =>
+                cache.match(request).then(cached => {
+                    const network = fetch(request)
+                        .then(response => {
+                            if (response && response.ok) {
+                                cache.put(request, response.clone());
+                            }
+                            return response;
+                        })
+                        .catch(() => cached); // offline: fall back to whatever we have
+                    // Serve cache immediately if present; otherwise wait on network.
+                    return cached || network;
+                })
+            )
         );
+        return;
     }
     // Everything else: default browser behavior (no interception)
 });
