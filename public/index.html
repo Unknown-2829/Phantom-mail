@@ -282,9 +282,44 @@
               <span>Sign in</span>
             </button>
           </div>
+          <button class="icon-header-btn" id="settings-header-btn" onclick="openSettings()" aria-label="Settings" title="Settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
           <button class="about-btn" onclick="openAbout()">About</button>
         </div>
       </header>
+
+      <!-- Inbox toolbar: filters · search · select-all (hidden while Sent tab active) -->
+      <div class="inbox-toolbar" id="inbox-toolbar">
+        <div class="inbox-filters" role="tablist" aria-label="Filter inbox">
+          <button class="inbox-filter active" id="filter-all" role="tab" aria-selected="true" onclick="setInboxFilter('all')">
+            All <span class="filter-count" id="filter-count-all">0</span>
+          </button>
+          <button class="inbox-filter" id="filter-unread" role="tab" aria-selected="false" onclick="setInboxFilter('unread')">
+            Unread <span class="filter-count" id="filter-count-unread">0</span>
+          </button>
+          <button class="inbox-filter" id="filter-starred" role="tab" aria-selected="false" onclick="setInboxFilter('starred')">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            <span class="filter-count" id="filter-count-starred">0</span>
+          </button>
+        </div>
+
+        <div class="inbox-toolbar-right">
+          <div class="inbox-search-wrap">
+            <svg class="inbox-search-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="inbox-search" class="inbox-search" placeholder="Search inbox…"
+                   aria-label="Search inbox" spellcheck="false" autocomplete="off"
+                   oninput="onInboxSearch(this.value)">
+            <button class="inbox-search-clear hidden" id="inbox-search-clear" onclick="clearInboxSearch()" aria-label="Clear search" title="Clear">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <button class="inbox-selectall-btn" id="inbox-selectall-btn" onclick="toggleSelectAll()" title="Select all" aria-label="Select all">
+            <span class="selectall-box" aria-hidden="true"></span>
+            <span class="selectall-label">All</span>
+          </button>
+        </div>
+      </div>
 
       <!-- Inbox list — rows, skeletons and the ghost empty state are JS-rendered -->
       <div class="inbox-body" id="inbox-body"><!-- populated by app.js --></div>
@@ -301,6 +336,31 @@
     </main>
 
   </div><!-- /#app-shell -->
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       BULK ACTION BAR — slides up when ≥1 email selected
+       ═══════════════════════════════════════════════════════════════════ -->
+  <div class="bulk-bar" id="bulk-bar" role="toolbar" aria-label="Bulk actions" aria-hidden="true">
+    <div class="bulk-bar-count"><strong id="bulk-count">0</strong> selected</div>
+    <div class="bulk-bar-actions">
+      <button class="bulk-act" onclick="bulkAction('read')" title="Mark read / unread">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        <span>Read</span>
+      </button>
+      <button class="bulk-act" onclick="bulkAction('star')" title="Star / unstar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        <span>Star</span>
+      </button>
+      <button class="bulk-act bulk-act-danger" onclick="bulkAction('delete')" title="Delete selected">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        <span>Delete <span id="bulk-del-count"></span></span>
+      </button>
+      <button class="bulk-act bulk-act-ghost" onclick="clearSelection()" title="Deselect all">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <span>Deselect</span>
+      </button>
+    </div>
+  </div>
 
   <!-- ═══════════════════════════════════════════════════════════════════
        MOBILE BOTTOM NAV
@@ -558,6 +618,14 @@
           <span>Back</span>
         </button>
         <div class="modal-actions">
+          <button class="action-link action-link-reply" id="reader-reply-btn" onclick="replyCurrentEmail()" title="Reply">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+            <span>Reply</span>
+          </button>
+          <button class="action-link action-link-fwd" id="reader-forward-btn" onclick="forwardCurrentEmail()" title="Forward">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>
+            <span>Forward</span>
+          </button>
           <button class="action-link" onclick="deleteCurrentEmail()">Delete</button>
           <button class="action-link" id="source-toggle-btn" title="View raw source — click again to return" onclick="viewSource()">Source</button>
         </div>
@@ -677,6 +745,74 @@
     </button>
     <div class="att-lb-content" id="att-lb-content"></div>
     <div class="att-lb-filename" id="att-lb-filename"></div>
+  </div>
+
+  <!-- ─── Settings ─── -->
+  <div class="settings-modal" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onclick="if(event.target===this)closeSettings()">
+    <div class="settings-content">
+      <div class="settings-header">
+        <h2 id="settings-title">Settings</h2>
+        <button class="settings-close" onclick="closeSettings()" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="settings-body">
+        <label class="setting-row">
+          <div class="setting-text">
+            <span class="setting-label">Notification sound</span>
+            <span class="setting-desc">Play a soft chime when new mail arrives.</span>
+          </div>
+          <span class="switch"><input type="checkbox" id="set-notif-sound" onchange="onSettingChange('notificationSound', this.checked)"><span class="switch-track"></span></span>
+        </label>
+
+        <label class="setting-row">
+          <div class="setting-text">
+            <span class="setting-label">Block remote images</span>
+            <span class="setting-desc">Hide remote images until you tap “Load images”. Blocks tracking pixels.</span>
+          </div>
+          <span class="switch"><input type="checkbox" id="set-block-images" onchange="onSettingChange('blockRemoteImages', this.checked)"><span class="switch-track"></span></span>
+        </label>
+
+        <label class="setting-row">
+          <div class="setting-text">
+            <span class="setting-label">Keyboard shortcuts</span>
+            <span class="setting-desc">Use j/k, r, e, s and more. Press ? for the full list.</span>
+          </div>
+          <span class="switch"><input type="checkbox" id="set-kbd" onchange="onSettingChange('keyboardShortcuts', this.checked)"><span class="switch-track"></span></span>
+        </label>
+
+        <div class="setting-row setting-row-select">
+          <div class="setting-text">
+            <span class="setting-label">Preferred domain</span>
+            <span class="setting-desc">Used when generating new phantom addresses.</span>
+          </div>
+          <select id="set-domain" class="setting-select" onchange="onSettingChange('preferredDomain', this.value)"></select>
+        </div>
+
+        <button class="settings-shortcuts-link" onclick="closeSettings();showShortcutsModal();">View keyboard shortcuts</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── Keyboard shortcuts help ─── -->
+  <div class="confirm-modal shortcuts-modal" id="shortcuts-modal" role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" onclick="if(event.target===this)closeShortcutsModal()">
+    <div class="confirm-box shortcuts-box">
+      <button class="pv-close" onclick="closeShortcutsModal()" aria-label="Close">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      <h3 class="confirm-title" id="shortcuts-title">Keyboard shortcuts</h3>
+      <div class="shortcuts-grid">
+        <div class="shortcut-row"><kbd>j</kbd> <kbd>k</kbd><span>Next / previous email</span></div>
+        <div class="shortcut-row"><kbd>Enter</kbd> <kbd>o</kbd><span>Open highlighted email</span></div>
+        <div class="shortcut-row"><kbd>e</kbd><span>Delete email</span></div>
+        <div class="shortcut-row"><kbd>s</kbd><span>Star / unstar</span></div>
+        <div class="shortcut-row"><kbd>r</kbd><span>Reply</span></div>
+        <div class="shortcut-row"><kbd>Esc</kbd><span>Close reader</span></div>
+        <div class="shortcut-row"><kbd>/</kbd><span>Focus inbox search</span></div>
+        <div class="shortcut-row"><kbd>?</kbd><span>Show this help</span></div>
+      </div>
+      <p class="shortcuts-note">Shortcuts are ignored while typing. Toggle them in Settings.</p>
+    </div>
   </div>
 
   <!-- ─── Toast ─── -->

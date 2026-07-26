@@ -107,7 +107,10 @@
 
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
-    html { color-scheme: dark; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    html { color-scheme: dark; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; }
+
+    ::selection { background: var(--accent); color: var(--on-accent); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-sm); }
 
     body {
       font-family: var(--font-body);
@@ -193,9 +196,10 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
     }
-    .nav-back-btn:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+    .nav-back-btn:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); transform: translateY(-1px); }
+    .nav-back-btn:active { transform: translateY(0) scale(0.98); }
 
     .nav-user-badge {
       background: var(--accent-soft);
@@ -373,6 +377,23 @@
       to   { opacity: 1; transform: translateY(0); }
     }
 
+    /* Gentle inner stagger for step-1 blocks on first paint */
+    #pp-step-1.active > .prem-features,
+    #pp-step-1.active > .prem-compare,
+    #pp-step-1.active > .prem-pricing,
+    #pp-step-1.active > .prem-cta-btn {
+      animation: fadeUp var(--dur-slow) var(--ease) both;
+    }
+    #pp-step-1.active > .prem-features { animation-delay: 0.06s; }
+    #pp-step-1.active > .prem-compare  { animation-delay: 0.12s; }
+    #pp-step-1.active > .prem-pricing  { animation-delay: 0.18s; }
+    #pp-step-1.active > .prem-cta-btn  { animation-delay: 0.24s; }
+
+    /* Hero entrance */
+    .prem-hero-badge { animation: fadeUp var(--dur-slow) var(--ease) both; }
+    .prem-hero h1 { animation: fadeUp var(--dur-slow) var(--ease) both; animation-delay: 0.06s; }
+    .prem-hero p  { animation: fadeUp var(--dur-slow) var(--ease) both; animation-delay: 0.12s; }
+
     /* Glass card */
     .glass-card {
       background: var(--panel);
@@ -410,6 +431,10 @@
       box-shadow: var(--shadow-glow);
     }
 
+    /* Icon nudges on card hover for a touch of life */
+    .prem-feat:hover .prem-feat-ico { transform: scale(1.12) rotate(-4deg); }
+    .prem-feat-ico { transition: transform var(--dur) var(--ease); }
+
     .prem-feat-ico { font-size: 26px; flex-shrink: 0; line-height: 1; }
 
     .prem-feat-text strong {
@@ -438,7 +463,10 @@
       font-size: 13px;
       border-bottom: 1px solid var(--border);
       align-items: center;
+      transition: background var(--dur-fast) var(--ease);
     }
+
+    .comp-row:not(.comp-head):hover { background: rgba(255,255,255,0.02); }
 
     .comp-row:last-child { border-bottom: none; }
 
@@ -500,6 +528,22 @@
     .prem-price-card.featured {
       border-color: var(--violet-line);
       background: linear-gradient(160deg, var(--panel) 0%, var(--violet-soft) 100%);
+      overflow: hidden;
+    }
+
+    /* Soft diagonal sheen sweep on the premium plan — runs once on load */
+    .prem-price-card.featured::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, transparent 30%, rgba(124,92,252,0.10) 50%, transparent 70%);
+      transform: translateX(-120%);
+      pointer-events: none;
+      animation: sheenSweep 2.6s var(--ease) 0.6s;
+    }
+
+    @keyframes sheenSweep {
+      to { transform: translateX(120%); }
     }
 
     .prem-price-card.featured:hover {
@@ -549,7 +593,10 @@
       font-size: 38px;
       font-weight: 600;
       color: var(--text);
+      transition: transform var(--dur) var(--ease);
     }
+
+    .prem-price-card:hover .price-amount { transform: scale(1.04); }
 
     .price-amount sub {
       font-family: var(--font-body);
@@ -619,6 +666,8 @@
       cursor: pointer;
       transition: all var(--dur-fast) var(--ease);
     }
+
+    .prem-auth-tab:hover:not(.active) { color: var(--text-dim); }
 
     .prem-auth-tab.active {
       background: var(--accent);
@@ -733,6 +782,9 @@
       text-align: center;
     }
 
+    .crypto-tab:hover { border-color: var(--border-strong); color: var(--text); }
+    .crypto-tab:active { transform: scale(0.97); }
+
     .crypto-tab.active {
       background: var(--accent-soft);
       border-color: var(--accent);
@@ -769,6 +821,7 @@
     }
 
     .crypto-copy-btn:hover { background: var(--accent); color: var(--on-accent); }
+    .crypto-copy-btn:active { transform: scale(0.96); }
 
     .crypto-network {
       font-size: 11px;
@@ -860,6 +913,7 @@
     }
 
     .prem-back-btn:hover { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+    .prem-back-btn:active { transform: scale(0.98); }
 
     .otp-input { letter-spacing: 0.3em; font-size: 20px; text-align: center; font-family: var(--font-mono); }
 
@@ -877,7 +931,12 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
     }
   </style>
 </head>

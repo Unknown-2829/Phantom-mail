@@ -29,10 +29,45 @@ const PERM_USERNAME_RE = /^[a-z0-9._-]+$/;
 // Persistent state (loaded once at startup)
 let deletedIds = JSON.parse(localStorage.getItem('deletedIds') || '[]');
 let readIds = JSON.parse(localStorage.getItem('readIds') || '[]');
+// Starred email keys mirrored locally (server is authoritative; this survives refresh)
+let starredIds = JSON.parse(localStorage.getItem('starredIds') || '[]');
+
+// ── Inbox feature state ──────────────────────────────────────
+// Active list filter: 'all' | 'unread' | 'starred' (persisted).
+let _inboxFilter = localStorage.getItem('inboxFilter') || 'all';
+// Instant client-side search query (from/subject). Not persisted.
+let _inboxQuery = '';
+// Multi-select set of email keys; survives refresh via sessionStorage.
+let _selectedKeys = new Set(
+  JSON.parse(sessionStorage.getItem('selectedKeys') || '[]')
+);
+
+// ── User settings (localStorage.phantomSettings) ──────────────
+const DEFAULT_SETTINGS = {
+  notificationSound: true,
+  blockRemoteImages: true,
+  preferredDomain: '',
+  keyboardShortcuts: true
+};
+let phantomSettings = _loadSettings();
+
+function _loadSettings() {
+  try {
+    const raw = JSON.parse(localStorage.getItem('phantomSettings') || '{}');
+    return { ...DEFAULT_SETTINGS, ...(raw && typeof raw === 'object' ? raw : {}) };
+  } catch (_) { return { ...DEFAULT_SETTINGS }; }
+}
+function _saveSettings() {
+  try { localStorage.setItem('phantomSettings', JSON.stringify(phantomSettings)); } catch (_) {}
+}
 
 // Flags to prevent double-actions
 let isGenerating = false;
 let renderPending = false;
+
+// Keys of inbox rows already on-screen — used to animate ONLY freshly-arrived
+// mail (never re-animates the whole list on a benign re-render).
+let _seenEmailKeys = new Set();
 
 // ── Compose / Sent state ──────────────────────────────────────
 let composeMinimized = false;
@@ -56,6 +91,12 @@ let _iframeResizeObserver = null;
 
 // Tracks whether the email modal is currently showing raw source instead of rendered email.
 let _isSourceView = false;
+
+// Per-open override: user clicked "Load images" for the current email. Reset on each open.
+let _readerImagesLoaded = false;
+
+// True while the reader shows a SENT email (disables inbox keyboard actions).
+let _readerIsSent = false;
 
 // ═══════════════════════════════════════════════════════════════
 // CLIENT-SIDE TTL CACHE
@@ -103,10 +144,16 @@ function init() {
 
   requestNotificationPermission();
   updateLogoForUser();
+  _applySettings();          // apply saved settings (image-block default, domain, etc.)
   _initDomainPicker();
   _startSessionExpiryWatch();
   _initKeyboardShortcuts();
+  _syncFilterTabs();         // restore persisted inbox filter choice
   switchMainTab('inbox');
+
+  // Paint the ghost empty-state immediately so the inbox never flashes blank
+  // between load and the first mail fetch (real rows overwrite it moments later).
+  renderInbox();
 
   // ── Public config (Pusher key fallback + announcement for late joiners) ──
   _loadAppConfig().catch(() => {});
@@ -291,52 +338,277 @@ function haptic(pattern = [10]) {
 }
 
 // ── Keyboard Shortcuts ───────────────────────────────────────
+// Highlighted (keyboard-focused) row index while browsing the list.
+let _kbCursor = -1;
+
 function _initKeyboardShortcuts() {
   document.addEventListener('keydown', e => {
-    // Skip if focus is in an input/textarea/contenteditable
+    // Respect the user's "keyboard shortcuts" setting.
+    if (!phantomSettings.keyboardShortcuts) return;
+    // Never hijack keys while typing in a field / contenteditable.
     const tag = e.target.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+    // Ignore modifier combos so browser/OS shortcuts still work.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
     const modal = document.getElementById('email-modal');
     const modalOpen = modal && modal.classList.contains('show');
+    const shortcutsOpen = document.getElementById('shortcuts-modal')?.classList.contains('show');
+    // Inbox-scoped actions (delete/star/reply of the OPEN message) are disabled
+    // while the reader is showing a Sent message.
+    const readerInbox = modalOpen && !_readerIsSent;
+
+    // '?' opens/closes the help sheet from anywhere.
+    if (e.key === '?') { e.preventDefault(); _toggleShortcutsModal(); return; }
+    if (shortcutsOpen && e.key === 'Escape') { e.preventDefault(); closeShortcutsModal(); return; }
+
     switch (e.key) {
       case 'j': case 'J':
-        if (!modalOpen && emailsList.length > 0) {
-          const next = Math.min((currentViewIndex < 0 ? 0 : currentViewIndex + 1), emailsList.length - 1);
-          viewEmail(next);
-        } else if (modalOpen) { closeModal(); const n = Math.min(currentViewIndex + 1, emailsList.length - 1); if(n >= 0) viewEmail(n); }
+        e.preventDefault();
+        if (readerInbox) { const n = Math.min(currentViewIndex + 1, emailsList.length - 1); if (n >= 0 && n !== currentViewIndex) { closeModal(); viewEmail(n); } }
+        else if (!modalOpen) _moveCursor(1);
         break;
       case 'k': case 'K':
-        if (modalOpen && currentViewIndex > 0) { closeModal(); viewEmail(currentViewIndex - 1); }
+        e.preventDefault();
+        if (readerInbox) { if (currentViewIndex > 0) { closeModal(); viewEmail(currentViewIndex - 1); } }
+        else if (!modalOpen) _moveCursor(-1);
+        break;
+      case 'Enter': case 'o': case 'O':
+        if (!modalOpen && _kbCursor >= 0) { e.preventDefault(); _openCursorEmail(); }
         break;
       case 'e': case 'E':
-        if (modalOpen) deleteCurrentEmail();
+        if (readerInbox) { e.preventDefault(); deleteCurrentEmail(); }
+        else if (!modalOpen && _kbCursor >= 0) { e.preventDefault(); deleteFromList(_kbCursor); }
         break;
-      case 'r': case 'R':
-        if (modalOpen && currentViewIndex >= 0) {
-          const email = emailsList[currentViewIndex];
-          if (email) _replyToEmail(email);
-        }
+      case 's': case 'S':
+        if (readerInbox && currentViewIndex >= 0) { e.preventDefault(); toggleStar(null, currentViewIndex); }
+        else if (!modalOpen && _kbCursor >= 0) { e.preventDefault(); toggleStar(null, _kbCursor); }
         break;
-      case '?':
-        _showKeyboardShortcutsModal();
+      case 'r': case 'R': {
+        if (readerInbox && emailsList[currentViewIndex]) { e.preventDefault(); replyCurrentEmail(); }
+        else if (!modalOpen && emailsList[_kbCursor]) { e.preventDefault(); _replyToEmail(emailsList[_kbCursor]); }
+        break;
+      }
+      case 'Escape':
+        if (modalOpen) { e.preventDefault(); closeModal(); }
+        break;
+      case '/':
+        e.preventDefault();
+        focusInboxSearch();
         break;
     }
   });
 }
 
+// Move the keyboard cursor within the currently-visible (filtered) rows.
+function _moveCursor(delta) {
+  const rows = $inboxBody ? [...$inboxBody.querySelectorAll('.email-row')] : [];
+  if (rows.length === 0) return;
+  // Map current cursor (emailsList index) → position among visible rows.
+  let pos = rows.findIndex(r => parseInt(r.dataset.idx, 10) === _kbCursor);
+  pos = pos < 0 ? (delta > 0 ? 0 : rows.length - 1) : Math.min(Math.max(pos + delta, 0), rows.length - 1);
+  const target = rows[pos];
+  _kbCursor = parseInt(target.dataset.idx, 10);
+  rows.forEach(r => r.classList.remove('kb-cursor'));
+  target.classList.add('kb-cursor');
+  target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function _openCursorEmail() {
+  if (_kbCursor >= 0 && emailsList[_kbCursor]) viewEmail(_kbCursor);
+}
+
+// Delete a message directly from the list (keyboard 'e' without opening it).
+function deleteFromList(index) {
+  currentViewIndex = index;      // deleteCurrentEmail reads this
+  deleteCurrentEmail().finally(() => {
+    if (_kbCursor >= emailsList.length) _kbCursor = emailsList.length - 1;
+  });
+}
+
+// ── Reply / Forward ───────────────────────────────────────────
+// Build a quoted-original block for reply/forward bodies.
+function _quotedOriginal(email) {
+  const sender = parseSender(email.from, email);
+  const dateStr = formatDate(email.timestamp);
+  const who = escapeHtml(sender.name || sender.email || 'sender');
+  const addr = escapeHtml(sender.email || '');
+  const original = email.htmlBody
+    ? sanitizeHtml(email.htmlBody)
+    : escapeHtml(email.body || '').replace(/\n/g, '<br>');
+  return `<br><br>`
+    + `<div class="quoted-reply" style="border-left:3px solid #3a4150;margin:0;padding:2px 0 2px 12px;color:#8a94a6;">`
+    + `<div style="font-size:12px;color:#64748b;margin-bottom:6px;">On ${escapeHtml(dateStr)}, ${who} &lt;${addr}&gt; wrote:</div>`
+    + `${original}</div>`;
+}
+
 function _replyToEmail(email) {
+  if (!email) return;
   openCompose();
   const sender = parseSender(email.from, email);
   const toEl = document.getElementById('compose-to');
   const subEl = document.getElementById('compose-subject');
   const editorEl = document.getElementById('compose-editor');
   if (toEl) toEl.value = sender.email || email.from || '';
-  if (subEl) subEl.value = (email.subject || '').startsWith('Re:') ? email.subject : 'Re: ' + (email.subject || '');
-  if (editorEl) editorEl.innerHTML = `<br><br><blockquote style="border-left:3px solid #555;margin:0;padding:0 12px;color:#aaa">--- Original ---<br>${escapeHtml(sender.name || sender.email)} wrote:<br>${email.htmlBody || escapeHtml(email.body || '')}</blockquote>`;
+  if (subEl) subEl.value = /^re:/i.test(email.subject || '') ? email.subject : 'Re: ' + (email.subject || '');
+  if (editorEl) editorEl.innerHTML = _quotedOriginal(email);
+  setTimeout(() => { const ed = document.getElementById('compose-editor'); if (ed) { ed.focus(); _placeCaretAtStart(ed); } }, 120);
 }
 
-function _showKeyboardShortcutsModal() {
-  showToast('J/K: next/prev  E: delete  R: reply  ?: shortcuts');
+function _forwardEmail(email) {
+  if (!email) return;
+  openCompose();
+  const subEl = document.getElementById('compose-subject');
+  const toEl = document.getElementById('compose-to');
+  const editorEl = document.getElementById('compose-editor');
+  if (toEl) toEl.value = ''; // Forward: recipient starts empty
+  if (subEl) subEl.value = /^fwd:/i.test(email.subject || '') ? email.subject : 'Fwd: ' + (email.subject || '');
+  const sender = parseSender(email.from, email);
+  const header = `<div style="color:#64748b;font-size:12px;margin-bottom:8px;">`
+    + `---------- Forwarded message ----------<br>`
+    + `From: ${escapeHtml(sender.name || sender.email)} &lt;${escapeHtml(sender.email || '')}&gt;<br>`
+    + `Date: ${escapeHtml(formatDate(email.timestamp))}<br>`
+    + `Subject: ${escapeHtml(email.subject || '(No Subject)')}</div>`;
+  const original = email.htmlBody ? sanitizeHtml(email.htmlBody)
+    : escapeHtml(email.body || '').replace(/\n/g, '<br>');
+  if (editorEl) editorEl.innerHTML = `<br>${header}${original}`;
+  setTimeout(() => { const t = document.getElementById('compose-to'); if (t) t.focus(); }, 120);
+}
+
+// Reader-button entry points (resolve the currently-open email).
+function replyCurrentEmail() {
+  const email = emailsList[currentViewIndex];
+  if (!email) return;
+  const modalOpen = document.getElementById('email-modal')?.classList.contains('show');
+  if (modalOpen) closeModal();
+  _replyToEmail(email);
+}
+function forwardCurrentEmail() {
+  const email = emailsList[currentViewIndex];
+  if (!email) return;
+  const modalOpen = document.getElementById('email-modal')?.classList.contains('show');
+  if (modalOpen) closeModal();
+  _forwardEmail(email);
+}
+
+function _placeCaretAtStart(el) {
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (_) {}
+}
+
+// ── Keyboard shortcuts help modal ─────────────────────────────
+function _toggleShortcutsModal() {
+  const m = document.getElementById('shortcuts-modal');
+  if (m && m.classList.contains('show')) closeShortcutsModal();
+  else showShortcutsModal();
+}
+function showShortcutsModal() {
+  const m = document.getElementById('shortcuts-modal');
+  if (!m) return;
+  m.classList.remove('hiding');
+  m.classList.add('show');
+  _pushModalHistory();
+}
+function closeShortcutsModal() {
+  const m = document.getElementById('shortcuts-modal');
+  if (!m) return;
+  _popModalHistory();
+  _dismissModal(m);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SETTINGS PANEL — localStorage.phantomSettings
+   ═══════════════════════════════════════════════════════════════════════ */
+function openSettings() {
+  const m = document.getElementById('settings-modal');
+  if (!m) return;
+  _hydrateSettingsUI();
+  m.classList.remove('hiding');
+  m.classList.add('show');
+  document.body.style.overflow = 'hidden';
+  _pushModalHistory();
+  _focusInDialog(m);
+}
+function closeSettings() {
+  const m = document.getElementById('settings-modal');
+  if (!m) return;
+  _popModalHistory();
+  _dismissModal(m);
+  _restoreFocus?.();
+  document.body.style.overflow = '';
+}
+
+// Reflect current settings into the settings modal controls.
+function _hydrateSettingsUI() {
+  const set = (id, on) => { const el = document.getElementById(id); if (el) el.checked = !!on; };
+  set('set-notif-sound', phantomSettings.notificationSound);
+  set('set-block-images', phantomSettings.blockRemoteImages);
+  set('set-kbd', phantomSettings.keyboardShortcuts);
+  const dom = document.getElementById('set-domain');
+  if (dom) {
+    dom.innerHTML = '';
+    // First option = "Auto" (follow the address-card picker)
+    const auto = document.createElement('option');
+    auto.value = ''; auto.textContent = 'Auto';
+    dom.appendChild(auto);
+    ALLOWED_DOMAINS.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d; o.textContent = '@' + d;
+      dom.appendChild(o);
+    });
+    dom.value = phantomSettings.preferredDomain || '';
+  }
+}
+
+// One handler for every setting control; persists + applies immediately.
+function onSettingChange(key, value) {
+  phantomSettings[key] = value;
+  _saveSettings();
+  _applySettings();
+  // A couple of settings have side effects worth surfacing.
+  if (key === 'notificationSound' && value) _playNotifSound();
+}
+
+// Apply settings across the app (called on boot + on every change).
+function _applySettings() {
+  // Preferred domain: mirror into the legacy localStorage key + address-card picker.
+  if (phantomSettings.preferredDomain && ALLOWED_DOMAINS.includes(phantomSettings.preferredDomain)) {
+    localStorage.setItem('preferredDomain', phantomSettings.preferredDomain);
+    const picker = document.getElementById('domain-picker');
+    if (picker && picker.value !== phantomSettings.preferredDomain) picker.value = phantomSettings.preferredDomain;
+  }
+  // blockRemoteImages / keyboardShortcuts / notificationSound are read at point-of-use.
+}
+
+// Soft chime for new mail (WebAudio — no asset, respects the setting).
+let _audioCtx = null;
+function _playNotifSound() {
+  if (!phantomSettings.notificationSound) return;
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    const now = ctx.currentTime;
+    const notes = [880, 1174.66]; // A5 → D6, a gentle two-note ping
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const t0 = now + i * 0.09;
+      gain.gain.setValueAtTime(0, t0);
+      gain.gain.linearRampToValueAtTime(0.09, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t0); osc.stop(t0 + 0.24);
+    });
+  } catch (_) { /* audio not available — silently ignore */ }
 }
 
 function _updateSignupEmailUI() {
@@ -401,12 +673,20 @@ function switchMainTab(tab) {
   if (sentBtn)  sentBtn.classList.toggle('active',  _mainTab === 'sent');
   const inboxBody = document.getElementById('inbox-body');
   const sentWrap  = document.getElementById('sent-box-wrapper');
+  const toolbar   = document.getElementById('inbox-toolbar');
   if (inboxBody) inboxBody.classList.toggle('hidden', _mainTab === 'sent');
   if (sentWrap)  sentWrap.classList.toggle('hidden',  _mainTab !== 'sent');
+  // Inbox toolbar (filters/search/select) is meaningless on the Sent tab.
+  if (toolbar) toolbar.classList.toggle('hidden', _mainTab === 'sent');
   if (_mainTab === 'sent') {
+    // Selection is inbox-scoped — collapse the bulk bar when leaving the inbox.
+    if (_selectedKeys.size) clearSelection();
     // Reuse the existing sent-box machinery: expand the body + render, then refresh
     if (!sentBoxOpen) toggleSentBox();
     loadSentEmails();
+  } else {
+    // Back on the inbox — reconcile toolbar visibility + counts.
+    scheduleRender();
   }
 }
 
@@ -589,6 +869,9 @@ async function refreshEmails() {
     emailsList = validEmails;
     const newCount = emailsList.length;
 
+    // Drop selection keys for emails that vanished server-side
+    _pruneSelection();
+
     // Persist inbox to cache after each successful fetch
     try { _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
 
@@ -596,6 +879,7 @@ async function refreshEmails() {
       const diff = newCount - oldCount;
       showToast(`📧 ${diff} new!`);
       showNotification('New Email!', `You have ${diff} new email(s)`);
+      _playNotifSound();
       setTimeout(() => { if (!document.hidden && currentEmail) refreshEmails(); }, 3000);
     }
 
@@ -629,9 +913,50 @@ function scheduleRender() {
   });
 }
 
+// Key helper — stable identity for an email across renders.
+function _emailKey(email, i) {
+  return email._key || email.id || email.timestamp || `idx-${i}`;
+}
+
+// Reconcile the starred flag from the local mirror (server data wins if present).
+function _applyStarMirror(email, key) {
+  if (email.starred === undefined && starredIds.includes(key)) email.starred = true;
+}
+
+// Predicate for the active filter + search query.
+function _emailMatchesFilter(email) {
+  if (_inboxFilter === 'unread' && email.read) return false;
+  if (_inboxFilter === 'starred' && !email.starred) return false;
+  if (_inboxQuery) {
+    const sender = parseSender(email.from, email);
+    const hay = `${sender.name} ${sender.email} ${email.from || ''} ${email.subject || ''}`.toLowerCase();
+    if (!hay.includes(_inboxQuery)) return false;
+  }
+  return true;
+}
+
+// Refresh the All/Unread/Starred pill counts.
+function _updateFilterCounts() {
+  const all = emailsList.length;
+  const unread = emailsList.filter(e => !e.read).length;
+  const starred = emailsList.filter(e => e.starred).length;
+  const set = (id, n) => { const el = document.getElementById(id); if (el) el.textContent = n; };
+  set('filter-count-all', all);
+  set('filter-count-unread', unread);
+  set('filter-count-starred', starred);
+  // Hide the toolbar entirely on a truly-empty inbox so the ghost hero stands
+  // alone; keep it while on the Sent tab hidden via switchMainTab.
+  const toolbar = document.getElementById('inbox-toolbar');
+  if (toolbar && _mainTab === 'inbox') toolbar.classList.toggle('hidden', all === 0);
+}
+
 // ===== Render Inbox =====
 function renderInbox() {
   if (!$inboxBody) return;
+
+  // Sync star mirror + filter counts before deciding what to paint.
+  emailsList.forEach((e, i) => _applyStarMirror(e, _emailKey(e, i)));
+  _updateFilterCounts();
 
   if (emailsList.length === 0) {
     const hasAddr = currentEmail && currentEmail.includes('@') && !/error/i.test(currentEmail);
@@ -669,24 +994,11 @@ function renderInbox() {
         </div>
       </div>
     `;
+    _seenEmailKeys.clear();
+    if (_selectedKeys.size) { _selectedKeys.clear(); _persistSelection(); }
+    _renderSelectionUI();
     return;
   }
-
-  // Build rows as a single HTML string (fast)
-  const rows = emailsList.map((email, i) => {
-    const sender = parseSender(email.from, email);
-    const subject = email.subject || '(No Subject)';
-    return `
-      <div class="email-row ${email.read ? '' : 'unread'}" onclick="viewEmail(${i})">
-        <div class="email-sender">
-          <span class="sender-name">${escapeHtml(sender.name)}</span>
-          <span class="sender-email-small">${escapeHtml(sender.email)}</span>
-        </div>
-        <div class="email-subject">${escapeHtml(subject)}</div>
-        <div class="email-view"><span class="view-arrow">›</span></div>
-      </div>
-    `;
-  }).join('');
 
   // Preserve scroll position across re-renders (e.g. read-state changes).
   // Only reset to top when the inbox was previously empty (first batch of emails arriving).
@@ -694,8 +1006,343 @@ function renderInbox() {
     $inboxBody.querySelector('.empty-inbox') !== null;
   const savedScroll = wasEmpty ? 0 : $inboxBody.scrollTop;
 
+  // Apply the active filter + search. Rows keep their REAL index in emailsList
+  // so viewEmail(i) / bulk actions resolve to the correct message.
+  const visible = emailsList
+    .map((email, i) => ({ email, i }))
+    .filter(({ email }) => _emailMatchesFilter(email));
+
+  // Nothing matches the current filter/search → friendly in-list message
+  // (distinct from the ghost "no mail at all" state above).
+  if (visible.length === 0) {
+    const label = _inboxQuery
+      ? `No results for “${escapeHtml(_inboxQuery)}”`
+      : _inboxFilter === 'unread' ? 'No unread mail'
+      : _inboxFilter === 'starred' ? 'No starred mail'
+      : 'Nothing here';
+    $inboxBody.innerHTML = `
+      <div class="inbox-no-match">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <p class="inbox-no-match-title">${label}</p>
+        ${(_inboxQuery || _inboxFilter !== 'all')
+          ? `<button class="inbox-no-match-reset" onclick="resetInboxView()">Show all</button>`
+          : ''}
+      </div>`;
+    _renderSelectionUI();
+    return;
+  }
+
+  // Cheap new-arrival animation: only rows whose key wasn't on-screen last
+  // render fade/slide in, staggered — existing rows never re-animate.
+  let staggerN = 0;
+  const rows = visible.map(({ email, i }) => {
+    const sender = parseSender(email.from, email);
+    const subject = email.subject || '(No Subject)';
+    const key = _emailKey(email, i);
+    const isNew = !_seenEmailKeys.has(key);
+    const isSel = _selectedKeys.has(key);
+    const hasAtt = email.attachments && email.attachments.length > 0;
+    const cls = `email-row ${email.read ? '' : 'unread'}${isNew ? ' row-in' : ''}`
+      + `${isSel ? ' selected' : ''}${hasAtt ? ' has-attachment' : ''}`;
+    const styleAttr = (isNew && staggerN < 8) ? ` style="--row-i:${staggerN++}"` : '';
+    const starCls = email.starred ? 'row-star starred' : 'row-star';
+    return `
+      <div class="${cls.trim()}"${styleAttr} data-key="${escapeHtml(key)}" data-idx="${i}">
+        <button class="row-check" onclick="toggleSelect(event, ${i})" aria-label="Select email" title="Select">
+          <span class="row-check-box" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </span>
+        </button>
+        <div class="email-open-region" onclick="viewEmail(${i})">
+          <div class="email-sender">
+            <span class="sender-name">${escapeHtml(sender.name)}</span>
+            <span class="sender-email-small">${escapeHtml(sender.email)}</span>
+          </div>
+          <div class="email-subject">${escapeHtml(subject)}</div>
+          <div class="email-time">${escapeHtml(_relTime(email.timestamp))}</div>
+        </div>
+        <button class="${starCls}" onclick="toggleStar(event, ${i})" aria-label="${email.starred ? 'Unstar' : 'Star'}" title="${email.starred ? 'Unstar' : 'Star'}">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="${email.starred ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+        </button>
+      </div>
+    `;
+  }).join('');
+
   $inboxBody.innerHTML = rows;
   $inboxBody.scrollTop = savedScroll;
+
+  // Remember the current key set for the next render's diff.
+  _seenEmailKeys = new Set(emailsList.map((e, i) => _emailKey(e, i)));
+
+  _renderSelectionUI();
+}
+
+// Compact relative time for inbox rows.
+function _relTime(ts) {
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  if (diff < 60000) return 'now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+  if (diff < 604800000) return Math.floor(diff / 86400000) + 'd';
+  const d = new Date(ts);
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   INBOX FEATURES — filters · search · multi-select · bulk · star
+   ═══════════════════════════════════════════════════════════════════════ */
+
+// ── Filter tabs (All / Unread / Starred) ──────────────────────
+function setInboxFilter(filter) {
+  if (!['all', 'unread', 'starred'].includes(filter)) filter = 'all';
+  _inboxFilter = filter;
+  localStorage.setItem('inboxFilter', filter);
+  _syncFilterTabs();
+  scheduleRender();
+}
+
+function _syncFilterTabs() {
+  ['all', 'unread', 'starred'].forEach(f => {
+    const btn = document.getElementById('filter-' + f);
+    if (btn) {
+      const on = f === _inboxFilter;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+  });
+}
+
+// Clear filter + search back to the default "all" view.
+function resetInboxView() {
+  _inboxQuery = '';
+  const input = document.getElementById('inbox-search');
+  if (input) input.value = '';
+  document.getElementById('inbox-search-clear')?.classList.add('hidden');
+  setInboxFilter('all');
+}
+
+// ── Inbox search (client-side, instant) ───────────────────────
+function onInboxSearch(value) {
+  _inboxQuery = (value || '').trim().toLowerCase();
+  document.getElementById('inbox-search-clear')?.classList.toggle('hidden', !_inboxQuery);
+  scheduleRender();
+}
+
+function clearInboxSearch() {
+  const input = document.getElementById('inbox-search');
+  if (input) input.value = '';
+  onInboxSearch('');
+  input?.focus();
+}
+
+function focusInboxSearch() {
+  // Make sure we're on the inbox tab first
+  if (_mainTab !== 'inbox') switchMainTab('inbox');
+  const input = document.getElementById('inbox-search');
+  if (input) { input.focus(); input.select(); }
+}
+
+// ── Multi-select ──────────────────────────────────────────────
+function _persistSelection() {
+  try { sessionStorage.setItem('selectedKeys', JSON.stringify([..._selectedKeys])); } catch (_) {}
+}
+
+// Prune selection keys that no longer exist (after refresh / delete).
+function _pruneSelection() {
+  if (_selectedKeys.size === 0) return;
+  const live = new Set(emailsList.map((e, i) => _emailKey(e, i)));
+  let changed = false;
+  _selectedKeys.forEach(k => { if (!live.has(k)) { _selectedKeys.delete(k); changed = true; } });
+  if (changed) _persistSelection();
+}
+
+function toggleSelect(event, index) {
+  if (event) event.stopPropagation();
+  const email = emailsList[index];
+  if (!email) return;
+  const key = _emailKey(email, index);
+  if (_selectedKeys.has(key)) _selectedKeys.delete(key);
+  else _selectedKeys.add(key);
+  _persistSelection();
+  // Toggle just this row's class for snappiness, then sync the bar.
+  const row = $inboxBody?.querySelector(`.email-row[data-key="${CSS.escape(key)}"]`);
+  if (row) row.classList.toggle('selected', _selectedKeys.has(key));
+  _renderSelectionUI();
+}
+
+function toggleSelectAll() {
+  const visibleKeys = emailsList
+    .map((e, i) => ({ e, i }))
+    .filter(({ e }) => _emailMatchesFilter(e))
+    .map(({ e, i }) => _emailKey(e, i));
+  const allSelected = visibleKeys.length > 0 && visibleKeys.every(k => _selectedKeys.has(k));
+  if (allSelected) {
+    visibleKeys.forEach(k => _selectedKeys.delete(k));
+  } else {
+    visibleKeys.forEach(k => _selectedKeys.add(k));
+  }
+  _persistSelection();
+  scheduleRender();
+}
+
+function clearSelection() {
+  if (_selectedKeys.size === 0) return;
+  _selectedKeys.clear();
+  _persistSelection();
+  scheduleRender();
+}
+
+// Sync the bulk bar + select-all button to the current selection.
+function _renderSelectionUI() {
+  const n = _selectedKeys.size;
+  const bar = document.getElementById('bulk-bar');
+  if (bar) {
+    bar.classList.toggle('show', n > 0);
+    bar.setAttribute('aria-hidden', n > 0 ? 'false' : 'true');
+    document.body.classList.toggle('has-selection', n > 0);
+    const countEl = document.getElementById('bulk-count');
+    if (countEl) countEl.textContent = n;
+    const delCount = document.getElementById('bulk-del-count');
+    if (delCount) delCount.textContent = n ? `(${n})` : '';
+  }
+  // Select-all button reflects "all visible selected" state
+  const saBtn = document.getElementById('inbox-selectall-btn');
+  if (saBtn) {
+    const visibleKeys = emailsList
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => _emailMatchesFilter(e))
+      .map(({ e, i }) => _emailKey(e, i));
+    const allSel = visibleKeys.length > 0 && visibleKeys.every(k => _selectedKeys.has(k));
+    saBtn.classList.toggle('checked', allSel);
+    saBtn.setAttribute('aria-pressed', allSel ? 'true' : 'false');
+  }
+}
+
+// Chunk an array into <=size slices (backend caps batch at 100; we use 50).
+function _chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+// ── Bulk actions → POST /api/emails/batch ─────────────────────
+async function bulkAction(action) {
+  const keys = [..._selectedKeys];
+  if (keys.length === 0) return;
+
+  // Resolve selected email objects (by key) for optimistic UI + value decisions.
+  const byKey = new Map(emailsList.map((e, i) => [_emailKey(e, i), e]));
+  const selected = keys.map(k => byKey.get(k)).filter(Boolean);
+  if (selected.length === 0) { clearSelection(); return; }
+
+  // Determine the toggle value where relevant:
+  //  - read: if ANY selected is unread → mark read; else mark unread
+  //  - star: if ANY selected is unstarred → star; else unstar
+  let value = true;
+  if (action === 'read')  value = selected.some(e => !e.read);
+  if (action === 'star')  value = selected.some(e => !e.starred);
+
+  if (action === 'delete' && selected.length > 3) {
+    if (!confirm(`Delete ${selected.length} emails? This cannot be undone.`)) return;
+  }
+
+  const token = localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+
+  // ── Optimistic UI update ──
+  if (action === 'delete') {
+    const keySet = new Set(keys);
+    selected.forEach(e => {
+      const id = e._key || e.id || e.timestamp;
+      if (!deletedIds.includes(id)) deletedIds.push(id);
+    });
+    localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
+    emailsList = emailsList.filter((e, i) => !keySet.has(_emailKey(e, i)));
+  } else if (action === 'read') {
+    selected.forEach(e => {
+      e.read = value;
+      const id = e._key || e.id || e.timestamp;
+      if (value && !readIds.includes(id)) readIds.push(id);
+      if (!value) readIds = readIds.filter(r => r !== id);
+    });
+    localStorage.setItem('readIds', JSON.stringify(readIds));
+    updateTabTitle(emailsList.filter(e => !e.read).length);
+  } else if (action === 'star') {
+    selected.forEach(e => {
+      e.starred = value;
+      const id = e._key || e.id || e.timestamp;
+      if (value && !starredIds.includes(id)) starredIds.push(id);
+      if (!value) starredIds = starredIds.filter(s => s !== id);
+    });
+    localStorage.setItem('starredIds', JSON.stringify(starredIds));
+  }
+  clearSelection(); // clears + re-renders
+
+  const verb = action === 'delete' ? 'Deleted' : action === 'star' ? (value ? 'Starred' : 'Unstarred') : (value ? 'Marked read' : 'Marked unread');
+
+  // Only real KV keys (email:…) can be persisted server-side. Local-only rows
+  // (cached without a key) just keep their optimistic client state.
+  const serverKeys = selected.map(e => e._key).filter(k => typeof k === 'string' && k.startsWith('email:'));
+  if (serverKeys.length === 0) { showToast(`${verb} ${selected.length}`, 'success'); return; }
+
+  // ── Fire the batched network calls (chunked ≤50) ──
+  const chunks = _chunk(serverKeys, 50);
+  let ok = 0, failed = 0;
+  await Promise.all(chunks.map(async chunk => {
+    try {
+      const res = await fetch('/api/emails/batch', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ address: currentEmail, keys: chunk, action, value })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) ok += (data.processed ?? chunk.length);
+      else failed += chunk.length;
+    } catch (_) { failed += chunk.length; }
+  }));
+
+  // Keep the inbox cache in sync with the optimistic list.
+  try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+
+  if (failed === 0) showToast(`${verb} ${selected.length}`, 'success');
+  else if (ok > 0)  showToast(`${verb} ${ok} · ${failed} failed`, 'info');
+  else              showToast(`Couldn't ${action} — try again`, 'error');
+}
+
+// ── Single-row star toggle → PATCH /api/email ─────────────────
+async function toggleStar(event, index) {
+  if (event) event.stopPropagation();
+  const email = emailsList[index];
+  if (!email) return;
+  const next = !email.starred;
+  email.starred = next;
+  const id = email._key || email.id || email.timestamp;
+  if (next && !starredIds.includes(id)) starredIds.push(id);
+  if (!next) starredIds = starredIds.filter(s => s !== id);
+  localStorage.setItem('starredIds', JSON.stringify(starredIds));
+  scheduleRender();
+
+  if (!email._key) return; // nothing to persist server-side
+  try {
+    const token = localStorage.getItem('authToken');
+    const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+    const res = await fetch('/api/email', {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ key: email._key, address: email.to || currentEmail, starred: next })
+    });
+    if (!res.ok) throw new Error('star failed');
+    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+  } catch (_) {
+    // Revert on failure
+    email.starred = !next;
+    if (!next && !starredIds.includes(id)) starredIds.push(id);
+    if (next) starredIds = starredIds.filter(s => s !== id);
+    localStorage.setItem('starredIds', JSON.stringify(starredIds));
+    showToast('Could not update star', 'error');
+    scheduleRender();
+  }
 }
 
 // ===== Parse Sender =====
@@ -824,9 +1471,17 @@ async function viewEmail(index) {
   const email = emailsList[index];
   if (!email) return;
 
+  // Keep the keyboard cursor in sync with what we open.
+  _kbCursor = index;
+
   // Always start in rendered-email view (not source)
   _isSourceView = false;
+  _readerImagesLoaded = false;   // each open re-blocks remote images
+  _readerIsSent = false;         // this is an inbox message
   _updateSourceBtn(false);
+  // Make sure the reader has action buttons visible (viewSentEmail hides some)
+  document.getElementById('reader-reply-btn')?.classList.remove('hidden');
+  document.getElementById('reader-forward-btn')?.classList.remove('hidden');
   // Restore source button visibility (may have been hidden by viewSentEmail)
   const sourceBtn = document.getElementById('source-toggle-btn');
   if (sourceBtn) sourceBtn.classList.remove('hidden');
@@ -867,9 +1522,12 @@ async function viewEmail(index) {
 
   // Open the modal immediately so the user sees the header/metadata right away
   _pushModalHistory();
-  document.getElementById('email-modal').classList.add('show');
+  const _readerEl = document.getElementById('email-modal');
+  _readerEl.classList.remove('hiding');
+  _readerEl.classList.add('show');
   document.body.classList.add('reader-open');
   document.body.style.overflow = 'hidden';
+  _focusInDialog(_readerEl);
 
   const body = document.getElementById('modal-body');
 
@@ -893,6 +1551,7 @@ async function viewEmail(index) {
   }
 
   _renderEmailBody(email, body);
+  _renderImageBlockBar(email, body);
 
   const attachSection = document.getElementById('modal-attachments');
   const attachList = document.getElementById('attachments-list');
@@ -1123,6 +1782,40 @@ function _renderEmailBody(email, body) {
     doc.querySelectorAll('img[src], source[src], video[src], audio[src]').forEach(el => upgradeHttp(el, 'src'));
     doc.querySelectorAll('video[poster]').forEach(el => upgradeHttp(el, 'poster'));
 
+    // ── Remote-image blocking (privacy) ──────────────────────────────────────
+    // Neutralize remote <img> sources into data-blocked-src so tracking pixels
+    // and remote images don't phone home until the user opts in. Inline data:/blob:/
+    // cid: images (safe, no network) are always allowed. Controlled by the setting +
+    // a per-open "Load images" override (_readerImagesLoaded).
+    let blockedImageCount = 0;
+    const isRemote = v => v && /^(https?:)?\/\//i.test(v.trim());
+    if (phantomSettings.blockRemoteImages && !_readerImagesLoaded) {
+      doc.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src');
+        const srcset = img.getAttribute('srcset');
+        let blocked = false;
+        if (isRemote(src)) { img.setAttribute('data-blocked-src', src); img.removeAttribute('src'); blocked = true; }
+        if (isRemote(srcset)) { img.setAttribute('data-blocked-srcset', srcset); img.removeAttribute('srcset'); blocked = true; }
+        if (blocked) {
+          blockedImageCount++;
+          // Collapse the placeholder so blocked pixels don't leave large gaps.
+          img.style.minHeight = '0';
+          img.setAttribute('alt', img.getAttribute('alt') || '');
+        }
+      });
+      // Also neutralize remote background images referenced by inline styles.
+      doc.querySelectorAll('[style*="url("]').forEach(el => {
+        const st = el.getAttribute('style') || '';
+        if (/url\((['"]?)(https?:)?\/\//i.test(st)) {
+          el.setAttribute('data-blocked-style', st);
+          el.setAttribute('style', st.replace(/url\((['"]?)(https?:)?\/\/[^)]*\)/gi, 'none'));
+          blockedImageCount++;
+        }
+      });
+    }
+    // Stash the count so viewEmail() can show/hide the "Load images" bar.
+    email._blockedImages = blockedImageCount;
+
     // ── Strip fixed-pixel dimension attributes ───────────────────────────────
     // HTML width/height attributes (e.g. <table width="600">) map to CSS intrinsic
     // sizes that resist max-width overrides on many browsers; removing them lets our
@@ -1302,6 +1995,36 @@ function _renderEmailBody(email, body) {
   } else {
     body.innerHTML = '<p style="color:#888;">No content</p>';
   }
+}
+
+// ── Remote-image "Load images" bar ────────────────────────────
+// Shows a privacy banner above the body when remote images were blocked.
+function _renderImageBlockBar(email, body) {
+  // Remove any stale bar first (re-renders / source toggles).
+  document.getElementById('img-block-bar')?.remove();
+  const n = email._blockedImages || 0;
+  if (n <= 0 || !body) return;
+  const bar = document.createElement('div');
+  bar.className = 'img-block-bar';
+  bar.id = 'img-block-bar';
+  bar.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+    <span class="img-block-text">Remote images blocked for your privacy.</span>
+    <button class="img-block-btn" onclick="loadReaderImages()">Load images</button>`;
+  // Insert the bar just above the rendered body content.
+  body.parentNode.insertBefore(bar, body);
+}
+
+// User opted in — re-render the current email with images allowed.
+function loadReaderImages() {
+  if (currentViewIndex < 0) return;
+  const email = emailsList[currentViewIndex];
+  if (!email) return;
+  _readerImagesLoaded = true;
+  const body = document.getElementById('modal-body');
+  document.getElementById('img-block-bar')?.remove();
+  _renderEmailBody(email, body);
+  showToast('Images loaded', 'success');
 }
 
 // Extract human-readable plain text from a raw MIME email source.
@@ -1490,7 +2213,8 @@ function cleanBrokenChars(text) {
 
 function closeModal() {
   _popModalHistory();
-  document.getElementById('email-modal').classList.remove('show');
+  _dismissModal(document.getElementById('email-modal'));
+  _restoreFocus();
   document.body.classList.remove('reader-open');
   document.body.style.overflow = '';
   currentViewIndex = -1;
@@ -1544,6 +2268,8 @@ async function deleteCurrentEmail() {
     localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
   }
   emailsList.splice(currentViewIndex, 1);
+  _pruneSelection();
+  if (_kbCursor >= emailsList.length) _kbCursor = emailsList.length - 1;
   updateTabTitle(emailsList.filter(e => !e.read).length);
   scheduleRender();
   closeModal();
@@ -1691,16 +2417,23 @@ function openAttLightbox(src, filename, type) {
 
   if (nameEl) nameEl.textContent = filename || '';
   _pushModalHistory();
+  lb.classList.remove('hiding');
   lb.classList.add('show');
   document.body.style.overflow = 'hidden';
+  _focusInDialog(lb);
 }
 
 function closeAttLightbox() {
-  _popModalHistory();
   const lb = document.getElementById('att-lightbox');
-  if (lb) lb.classList.remove('show');
-  document.body.style.overflow = '';
-  // Stop any playing media
+  if (!lb || !(lb.classList.contains('show') || lb.classList.contains('hiding'))) return;
+  _popModalHistory();
+  _dismissModal(lb);
+  // The reader modal (if open) keeps owning scroll-lock; only release when the
+  // lightbox was the top-most overlay.
+  if (!document.getElementById('email-modal')?.classList.contains('show')) {
+    document.body.style.overflow = '';
+  }
+  // Stop any playing media immediately (don't wait for the fade)
   document.querySelectorAll('#att-lb-content video, #att-lb-content audio')
     .forEach(el => { el.pause(); el.src = ''; });
 }
@@ -1811,12 +2544,23 @@ function showToast(msg, type = 'info') {
   if (!$toastMsg) $toastMsg = document.getElementById('toast-message');
   if (!$toast || !$toastMsg) return;
   const t = _TOAST_ICONS[type] ? type : 'info';
-  $toast.classList.remove('toast-success', 'toast-error', 'toast-info');
+  $toast.classList.remove('toast-success', 'toast-error', 'toast-info', 'hiding');
   $toast.classList.add('toast-' + t);
   $toastMsg.innerHTML = _TOAST_ICONS[t] + `<span class="toast-text">${escapeHtml(msg)}</span>`;
   $toast.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $toast.classList.remove('show'), 2500);
+  clearTimeout(_toastHideTimer);
+  toastTimer = setTimeout(_hideToast, 2500);
+}
+
+// Graceful toast exit: play the slide+fade-out, then remove from flow.
+let _toastHideTimer = null;
+function _hideToast() {
+  if (!$toast || !$toast.classList.contains('show')) return;
+  $toast.classList.remove('show');
+  $toast.classList.add('hiding');
+  clearTimeout(_toastHideTimer);
+  _toastHideTimer = setTimeout(() => $toast.classList.remove('hiding'), 300);
 }
 
 // ===== QR Code =====
@@ -1892,15 +2636,20 @@ function openPremium() {
   }
   const overlay = document.getElementById('pv-overlay');
   if (overlay) {
+    overlay.classList.remove('hiding');
     overlay.classList.add('show');
     document.body.style.overflow = 'hidden';
+    _pushModalHistory();
+    _focusInDialog(overlay);
   }
 }
 
 function closePremiumPreview() {
   const overlay = document.getElementById('pv-overlay');
-  if (overlay) {
-    overlay.classList.remove('show');
+  if (overlay && (overlay.classList.contains('show') || overlay.classList.contains('hiding'))) {
+    _popModalHistory();
+    _dismissModal(overlay);
+    _restoreFocus();
     document.body.style.overflow = '';
   }
 }
@@ -2311,10 +3060,44 @@ function _dismissModal(el) {
   if (!el || !el.classList.contains('show')) return;
   el.classList.remove('show');
   el.classList.add('hiding');
-  const cleanup = () => el.classList.remove('hiding');
+  // Guard against double-scheduling if the same modal is dismissed twice.
+  if (el._hideCleanup) { clearTimeout(el._hideCleanup); }
+  const cleanup = () => {
+    el.classList.remove('hiding');
+    if (el._hideCleanup) { clearTimeout(el._hideCleanup); el._hideCleanup = null; }
+  };
   el.addEventListener('animationend', cleanup, { once: true });
-  // Safety fallback in case animationend doesn't fire
-  setTimeout(cleanup, 400);
+  // Safety fallback in case animationend doesn't fire (matches --dur-slow ceiling)
+  el._hideCleanup = setTimeout(cleanup, 450);
+}
+
+/**
+ * Basic focus management for accessible dialogs: remember what was focused,
+ * then move focus to the first sensible control inside the dialog (its close
+ * button or first input). Focus is restored by _restoreFocus() on close.
+ */
+let _lastFocusedBeforeModal = null;
+function _focusInDialog(el) {
+  if (!el) return;
+  try { _lastFocusedBeforeModal = document.activeElement; } catch (_) { _lastFocusedBeforeModal = null; }
+  // Defer to the next frame so the element is laid out and focusable.
+  requestAnimationFrame(() => {
+    const target = el.querySelector(
+      'input:not([type=hidden]):not([disabled]), textarea:not([disabled]), ' +
+      'select:not([disabled]), [autofocus], .auth-close, .about-close, ' +
+      '.profile-close, .pv-close, button:not([disabled])'
+    );
+    if (target && typeof target.focus === 'function') {
+      try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
+    }
+  });
+}
+function _restoreFocus() {
+  const el = _lastFocusedBeforeModal;
+  _lastFocusedBeforeModal = null;
+  if (el && typeof el.focus === 'function' && document.contains(el)) {
+    try { el.focus({ preventScroll: true }); } catch (_) {}
+  }
 }
 
 function confirmSignOut() {
@@ -2324,6 +3107,7 @@ function confirmSignOut() {
     modal.classList.add('show');
     document.body.style.overflow = 'hidden';
     _pushModalHistory();
+    _focusInDialog(modal);
   } else {
     doSignOut();
   }
@@ -2332,6 +3116,7 @@ function confirmSignOut() {
 function closeSignOutConfirm() {
   _popModalHistory();
   _dismissModal(document.getElementById('signout-confirm-modal'));
+  _restoreFocus();
   document.body.style.overflow = '';
 }
 
@@ -2365,14 +3150,18 @@ async function doSignOut() {
 
 // ===== Auth Modal =====
 function openAuth() {
-  document.getElementById('auth-modal').classList.add('show');
+  const m = document.getElementById('auth-modal');
+  m.classList.remove('hiding');
+  m.classList.add('show');
   document.body.style.overflow = 'hidden';
   _pushModalHistory();
+  _focusInDialog(m);
 }
 
 function closeAuth() {
   _popModalHistory();
-  document.getElementById('auth-modal').classList.remove('show');
+  _dismissModal(document.getElementById('auth-modal'));
+  _restoreFocus();
   document.body.style.overflow = '';
   document.getElementById('signin-username').value = '';
   document.getElementById('signin-password').value = '';
@@ -2645,13 +3434,17 @@ function showAuthError(msg) {
 
 // ===== About Modal =====
 function openAbout() {
-  document.getElementById('about-modal').classList.add('show');
+  const m = document.getElementById('about-modal');
+  m.classList.remove('hiding');
+  m.classList.add('show');
   document.body.style.overflow = 'hidden';
   _pushModalHistory();
+  _focusInDialog(m);
 }
 function closeAbout() {
   _popModalHistory();
-  document.getElementById('about-modal').classList.remove('show');
+  _dismissModal(document.getElementById('about-modal'));
+  _restoreFocus();
   document.body.style.overflow = '';
 }
 
@@ -2663,12 +3456,14 @@ async function openProfile() {
   modal.classList.add('show');
   document.body.style.overflow = 'hidden';
   _pushModalHistory();
+  _focusInDialog(modal);
   await loadProfileData();
 }
 
 function closeProfile() {
   _popModalHistory();
   _dismissModal(document.getElementById('profile-modal'));
+  _restoreFocus();
   document.body.style.overflow = '';
 }
 
@@ -3344,11 +4139,13 @@ function showPremiumRequiredPrompt(message) {
   modal.classList.add('show');
   document.body.style.overflow = 'hidden';
   _pushModalHistory();
+  _focusInDialog(modal);
 }
 
 function closePremiumRequiredPrompt() {
   _popModalHistory();
   _dismissModal(document.getElementById('premium-required-modal'));
+  _restoreFocus();
   document.body.style.overflow = '';
 }
 
@@ -3537,12 +4334,18 @@ function _popModalHistory() {
 }
 
 function _closeTopmostModal() {
+  const sc = document.getElementById('shortcuts-modal');
+  if (sc && sc.classList.contains('show')) { closeShortcutsModal(); return; }
+  const settings = document.getElementById('settings-modal');
+  if (settings && settings.classList.contains('show')) { closeSettings(); return; }
   const lb = document.getElementById('att-lightbox');
   if (lb && lb.classList.contains('show')) { closeAttLightbox(); return; }
   const em = document.getElementById('email-modal');
   if (em && em.classList.contains('show')) { closeModal(); return; }
   const premReq = document.getElementById('premium-required-modal');
   if (premReq && premReq.classList.contains('show')) { closePremiumRequiredPrompt(); return; }
+  const pv = document.getElementById('pv-overlay');
+  if (pv && pv.classList.contains('show')) { closePremiumPreview(); return; }
   const signout = document.getElementById('signout-confirm-modal');
   if (signout && signout.classList.contains('show')) { closeSignOutConfirm(); return; }
   const auth = document.getElementById('auth-modal');
@@ -3565,10 +4368,15 @@ window.addEventListener('popstate', () => {
 
 // ===== Global Key/Click Listeners =====
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    closeModal(); closeAbout(); closeQR(); closePremiumFlow(); closeAuth(); closeProfile(); closeAttLightbox(); closeCompose();
-    closeSignOutConfirm(); closePremiumRequiredPrompt();
-  }
+  if (e.key !== 'Escape') return;
+  // Non-modal popovers first (they don't track history).
+  const qrOpen = qrVisible ||
+    !document.getElementById('qr-dropdown')?.classList.contains('hidden') ||
+    !document.getElementById('qr-dropdown-mobile')?.classList.contains('hidden');
+  if (qrOpen) { closeQR(); return; }
+  // Otherwise close exactly the single topmost overlay so history pops once
+  // and nothing else snaps shut behind it.
+  _closeTopmostModal();
 });
 
 // Re-position compose window on resize so it never goes off-screen
@@ -3604,6 +4412,10 @@ let _composeFullscreen = false;
 function openCompose() {
   const win = document.getElementById('compose-modal');
   if (!win) return;
+
+  // Cancel any in-flight close animation so a fast reopen doesn't get hidden.
+  if (win._composeHideTimer) { clearTimeout(win._composeHideTimer); win._composeHideTimer = null; }
+  win.classList.remove('hiding');
 
   // If already open and minimized — just un-minimize
   if (win.classList.contains('show') && win.classList.contains('minimized')) {
@@ -3737,14 +4549,35 @@ function closeCompose() {
   if (fab) fab.classList.remove('compose-fab--hidden');
   const win = document.getElementById('compose-modal');
   if (!win) return;
-  win.style.display = 'none'; // clear the inline style set by openCompose
-  win.classList.remove('show', 'minimized', 'fullscreen', 'dragging');
-  win.style.removeProperty('left');
-  win.style.removeProperty('top');
+  _restoreFocus();
+
+  // Full teardown of state + inline styles once the window is hidden.
+  const finalize = () => {
+    win.style.display = 'none'; // clear the inline style set by openCompose
+    win.classList.remove('show', 'hiding', 'minimized', 'fullscreen', 'dragging');
+    win.style.removeProperty('left');
+    win.style.removeProperty('top');
+    if (win._composeHideTimer) { clearTimeout(win._composeHideTimer); win._composeHideTimer = null; }
+  };
+
   document.body.classList.remove('compose-open');
   composeMinimized = false;
   _composeFullscreen = false;
   _composeDragActive = false;
+
+  // Graceful slide-down only in the natural docked/minimized position — a
+  // dragged or fullscreen window is hidden instantly to avoid an odd sweep.
+  const canAnimate = win.classList.contains('show') &&
+    !win.classList.contains('dragging') &&
+    !win.classList.contains('fullscreen');
+  if (canAnimate) {
+    win.classList.remove('show');
+    win.classList.add('hiding');
+    win.addEventListener('animationend', finalize, { once: true });
+    win._composeHideTimer = setTimeout(finalize, 320);
+  } else {
+    finalize();
+  }
 }
 
 // ===== COMPOSE: Draft save/restore =====
@@ -4453,11 +5286,14 @@ function viewSentEmail(index) {
 
   _sentSourceVisible = false; // reset source toggle on each open
 
-  // Hide inbox-only actions (Delete + raw-source toggle — we provide our own)
+  _readerIsSent = true;    // sent view — disable inbox keyboard actions
+  // Hide inbox-only actions (Reply/Forward/Delete + raw-source toggle — sent view provides its own)
   const inboxSourceBtn = document.getElementById('source-toggle-btn');
   if (inboxSourceBtn) inboxSourceBtn.classList.add('hidden');
   const deleteLink = document.querySelector('.modal-actions .action-link[onclick="deleteCurrentEmail()"]');
   if (deleteLink) deleteLink.classList.add('hidden');
+  document.getElementById('reader-reply-btn')?.classList.add('hidden');
+  document.getElementById('reader-forward-btn')?.classList.add('hidden');
 
   const toStr = Array.isArray(s.to) ? s.to.join(', ') : s.to;
   const opens = s.opens || 0;
@@ -4598,9 +5434,12 @@ function viewSentEmail(index) {
 
   document.getElementById('modal-attachments').classList.add('hidden');
   _pushModalHistory();
-  document.getElementById('email-modal').classList.add('show');
+  const _sentReaderEl = document.getElementById('email-modal');
+  _sentReaderEl.classList.remove('hiding');
+  _sentReaderEl.classList.add('show');
   document.body.classList.add('reader-open');
   document.body.style.overflow = 'hidden';
+  _focusInDialog(_sentReaderEl);
 }
 
 // Reconstruct a MIME-like raw source string from stored sent-email fields
