@@ -166,9 +166,9 @@ export async function onRequestDelete(context) {
         // Delete R2 attachments BEFORE the KV record (crash leaves a recoverable
         // record, not orphaned blobs).
         const data = await env.EMAILS.get(key, { type: 'json' }).catch(() => null);
-        if (data?.attachments && env.R2) {
+        if (data?.attachments && env.ATTACHMENTS) {
             await Promise.allSettled(
-                data.attachments.filter(a => a.r2Key).map(a => env.R2.delete(a.r2Key))
+                data.attachments.filter(a => a.key).map(a => env.ATTACHMENTS.delete(a.key))
             );
         }
 

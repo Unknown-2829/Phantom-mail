@@ -24,6 +24,13 @@ export async function onRequestPost(context) {
 
         // Generic response for password_reset — identical whether or not the
         // account exists or has a recovery email on file (prevents enumeration).
+        // The shape MUST be byte-for-byte identical in every password_reset outcome,
+        // including the presence of an `otpToken`. When there is nothing real to send
+        // (account absent, no recovery email, rate-limited, provider failure) we still
+        // return a syntactically valid RANDOM otpToken. It maps to no stored OTP, so
+        // any code the client later submits fails through the normal generic path —
+        // no observable difference between "exists" and "does not exist".
+        const resetDecoy = () => jsonResponse({ ...RESET_GENERIC, otpToken: generateToken() });
         const RESET_GENERIC = { success: true, message: 'If an account with a recovery email exists, a code has been sent.' };
 
         if (type === 'email_verify') {
@@ -55,7 +62,8 @@ export async function onRequestPost(context) {
             // success response in both cases. Only send when a real email exists.
             const user = await env.EMAILS.get(userKey, { type: 'json' });
             if (!user || !user.email) {
-                return jsonResponse(RESET_GENERIC);
+                // Return the SAME shape as a real send (incl. a random otpToken).
+                return resetDecoy();
             }
             targetEmail = user.email.toLowerCase();
 
@@ -80,10 +88,16 @@ export async function onRequestPost(context) {
         const rateRaw = await env.EMAILS.get(rateLimitKey);
         const rateCount = rateRaw ? parseInt(rateRaw, 10) : 0;
         if (rateCount >= 3) {
-            // For password_reset, don't reveal the account exists via a 429.
-            if (type === 'password_reset') return jsonResponse(RESET_GENERIC);
+            // For password_reset, don't reveal the account exists via a 429 — return
+            // the identical generic+otpToken shape as every other password_reset path.
+            if (type === 'password_reset') return resetDecoy();
             return jsonResponse({ error: 'Too many codes requested. Please wait 10 minutes.' }, 429);
         }
+
+        // Increment the per-target rate-limit counter BEFORE attempting the send, so a
+        // failed/aborted send still consumes a slot (prevents unbounded send attempts,
+        // and a provider-failure oracle where only successful sends cost a slot).
+        await env.EMAILS.put(rateLimitKey, String(rateCount + 1), { expirationTtl: 600 });
 
         // Generate 6-digit OTP using rejection sampling to avoid modulo bias
         const code = generateOtpCode();
@@ -123,13 +137,13 @@ export async function onRequestPost(context) {
         });
 
         if (!emailRes.ok) {
-            // password_reset: keep the response uniform even on a provider outage.
-            if (type === 'password_reset') return jsonResponse(RESET_GENERIC);
+            // password_reset: keep the response uniform (generic + random otpToken)
+            // even on a provider outage — same shape as the success path.
+            if (type === 'password_reset') return resetDecoy();
             return jsonResponse({ error: 'Failed to send email. Please try again.' }, 500);
         }
 
-        // Increment rate limit only after successful send
-        await env.EMAILS.put(rateLimitKey, String(rateCount + 1), { expirationTtl: 600 });
+        // Rate-limit counter was already incremented before the send attempt above.
 
         // password_reset: never leak the masked recovery email before verification.
         if (type === 'password_reset') {

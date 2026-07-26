@@ -30,31 +30,126 @@ function domainKey(domain) {
     return domain.split('.')[0];
 }
 
-/** Fire-and-forget Pusher REST trigger (HMAC-SHA256 signed) */
+/**
+ * Pure-JS MD5 (RFC 1321) — returns lowercase hex digest of a UTF-8 string.
+ *
+ * Cloudflare Workers' Web Crypto (crypto.subtle.digest) does NOT support 'MD5',
+ * so we must compute it in JS. Pusher's REST API recomputes md5(body) server-side
+ * and rejects the request if body_md5 mismatches, so a SHA-256 substitute will NOT
+ * work — the real MD5 is mandatory.
+ */
+function md5Hex(str) {
+    // UTF-8 encode input to bytes
+    const msg = new TextEncoder().encode(str);
+
+    function rotl(x, c) { return (x << c) | (x >>> (32 - c)); }
+    function add32(a, b) { return (a + b) & 0xffffffff; }
+
+    // Per-round shift amounts
+    const S = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+    ];
+    // Precomputed sine-derived constants K[i] = floor(abs(sin(i+1)) * 2^32)
+    const K = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+    ];
+
+    // Pre-processing: append 0x80, pad with zeros, then 64-bit little-endian bit length
+    const origLenBits = msg.length * 8;
+    const withOne = msg.length + 1;
+    const padLen = ((withOne + 8 + 63) & ~63); // total length multiple of 64
+    const buf = new Uint8Array(padLen);
+    buf.set(msg);
+    buf[msg.length] = 0x80;
+    // 64-bit length, little-endian (low 32 bits + high 32 bits)
+    const lenLo = origLenBits >>> 0;
+    const lenHi = Math.floor(origLenBits / 0x100000000) >>> 0;
+    buf[padLen - 8] = lenLo & 0xff;
+    buf[padLen - 7] = (lenLo >>> 8) & 0xff;
+    buf[padLen - 6] = (lenLo >>> 16) & 0xff;
+    buf[padLen - 5] = (lenLo >>> 24) & 0xff;
+    buf[padLen - 4] = lenHi & 0xff;
+    buf[padLen - 3] = (lenHi >>> 8) & 0xff;
+    buf[padLen - 2] = (lenHi >>> 16) & 0xff;
+    buf[padLen - 1] = (lenHi >>> 24) & 0xff;
+
+    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+    const M = new Int32Array(16);
+
+    for (let off = 0; off < padLen; off += 64) {
+        for (let i = 0; i < 16; i++) {
+            const j = off + i * 4;
+            M[i] = buf[j] | (buf[j + 1] << 8) | (buf[j + 2] << 16) | (buf[j + 3] << 24);
+        }
+
+        let A = a0, B = b0, C = c0, D = d0;
+
+        for (let i = 0; i < 64; i++) {
+            let F, g;
+            if (i < 16)      { F = (B & C) | (~B & D);        g = i; }
+            else if (i < 32) { F = (D & B) | (~D & C);        g = (5 * i + 1) & 15; }
+            else if (i < 48) { F = B ^ C ^ D;                 g = (3 * i + 5) & 15; }
+            else             { F = C ^ (B | ~D);              g = (7 * i) & 15; }
+
+            F = add32(add32(add32(F, A), K[i]), M[g]);
+            A = D; D = C; C = B;
+            B = add32(B, rotl(F, S[i]));
+        }
+
+        a0 = add32(a0, A);
+        b0 = add32(b0, B);
+        c0 = add32(c0, C);
+        d0 = add32(d0, D);
+    }
+
+    // Output digest as little-endian hex
+    const toHexLE = (n) => {
+        let h = '';
+        for (let i = 0; i < 4; i++) {
+            h += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, '0');
+        }
+        return h;
+    };
+    return toHexLE(a0) + toHexLE(b0) + toHexLE(c0) + toHexLE(d0);
+}
+
+/** Fire-and-forget Pusher REST trigger (HMAC-SHA256 signed, real MD5 body hash) */
 async function triggerPusher(env, channel, eventName, data) {
     if (!env.PUSHER_APP_ID || !env.PUSHER_KEY || !env.PUSHER_SECRET) return;
 
-    const host = `api-${env.PUSHER_CLUSTER || 'ap2'}.pusher.com`;
-    const path = `/apps/${env.PUSHER_APP_ID}/events`;
-    const bodyStr = JSON.stringify({ name: eventName, channel, data: JSON.stringify(data) });
-    const enc     = new TextEncoder();
-
-    // MD5 body hash (required by Pusher)
-    const md5Buf  = await crypto.subtle.digest('MD5', enc.encode(bodyStr));
-    const bodyMd5 = [...new Uint8Array(md5Buf)].map(b => b.toString(16).padStart(2, '0')).join('');
-
-    const ts  = Math.floor(Date.now() / 1000);
-    const qs  = `auth_key=${env.PUSHER_KEY}&auth_timestamp=${ts}&auth_version=1.0&body_md5=${bodyMd5}`;
-    const sig = `POST\n${path}\n${qs}`;
-
-    const hmacKey = await crypto.subtle.importKey(
-        'raw', enc.encode(env.PUSHER_SECRET),
-        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-    );
-    const sigBuf = await crypto.subtle.sign('HMAC', hmacKey, enc.encode(sig));
-    const authSig = [...new Uint8Array(sigBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
-
+    // Whole publish (MD5 + HMAC signing + fetch) is wrapped so any failure is
+    // swallowed and can never break mail storage (invoked under ctx.waitUntil).
     try {
+        const host = `api-${env.PUSHER_CLUSTER || 'ap2'}.pusher.com`;
+        const path = `/apps/${env.PUSHER_APP_ID}/events`;
+        const bodyStr = JSON.stringify({ name: eventName, channel, data: JSON.stringify(data) });
+        const enc     = new TextEncoder();
+
+        // MD5 body hash (required by Pusher — it recomputes md5(body) and rejects on mismatch).
+        // Web Crypto has no MD5 on Workers, so this uses a pure-JS RFC 1321 implementation.
+        const bodyMd5 = md5Hex(bodyStr);
+
+        const ts  = Math.floor(Date.now() / 1000);
+        const qs  = `auth_key=${env.PUSHER_KEY}&auth_timestamp=${ts}&auth_version=1.0&body_md5=${bodyMd5}`;
+        const sig = `POST\n${path}\n${qs}`;
+
+        const hmacKey = await crypto.subtle.importKey(
+            'raw', enc.encode(env.PUSHER_SECRET),
+            { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+        );
+        const sigBuf = await crypto.subtle.sign('HMAC', hmacKey, enc.encode(sig));
+        const authSig = [...new Uint8Array(sigBuf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
         await fetch(`https://${host}${path}?${qs}&auth_signature=${authSig}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -214,10 +309,17 @@ async function cronSweep(env) {
                         for (const k of excess) await env.EMAILS.delete(k.name);
                     }
 
-                    // Auto-purge unsaved free addresses older than 1 hour
+                    // Auto-purge unsaved free addresses whose NEWEST email is older
+                    // than the free TTL. Using the newest ts (not keys[0], which is the
+                    // OLDEST lexicographic key) prevents purging an inbox that still has
+                    // recent mail. Key shape: email:dKey:hash:ts:id -> ts is index [3].
                     if (!isSaved && !isPremium) {
-                        const age = Date.now() - (parseInt(keys[0]?.name.split(':')[3] || '0', 10));
-                        if (age > FREE_TTL_SEC * 1000) {
+                        let newest = 0;
+                        for (const k of keys) {
+                            const ts = parseInt(k.name.split(':')[3] || '0', 10);
+                            if (ts > newest) newest = ts;
+                        }
+                        if (Date.now() - newest > FREE_TTL_SEC * 1000) {
                             await purgeAddress(env, dKey, hash);
                         }
                     }
@@ -248,15 +350,19 @@ export default {
         const dKey       = domainKey(domain);
         const addressHash = await sha256Hex(recipient);
 
-        // 2. Fetch address metadata (plan, saved status)
-        let isPremium = false;
-        let isSaved   = false;
+        // 2. Fetch address metadata (plan, saved status, ownership)
+        let isPremium    = false;
+        let isSaved      = false;
+        let metaOwner    = null;   // set by /api/user/saved-emails on save
+        let metaClaimedBy = null;  // legacy/alt ownership marker
         const metaStr = await env.INBOX_META.get(`meta:${addressHash}`);
         if (metaStr) {
             try {
                 const m = JSON.parse(metaStr);
-                isPremium = !!m.isPremium;
-                isSaved   = !!m.isSaved;
+                isPremium     = !!m.isPremium;
+                isSaved       = !!m.isSaved;
+                metaOwner     = m.owner || null;
+                metaClaimedBy = m.claimedBy || null;
             } catch (_) {}
         }
 
@@ -360,7 +466,14 @@ export default {
         });
 
         // 8. Real-time Pusher push (fire-and-forget)
-        const pusherChannel = `private-inbox-${addressHash.slice(0, 32)}`;
+        //    SAVED / claimed / owned address -> PRIVATE channel (auth-gated owner).
+        //    TEMP / unsaved / anonymous address -> PUBLIC channel (no auth; anon gets real-time).
+        //    Signing is identical for both — only the channel name (private- prefix) differs.
+        const channelSuffix = addressHash.slice(0, 32);
+        const isClaimed     = isSaved || !!metaOwner || !!metaClaimedBy;
+        const pusherChannel = isClaimed
+            ? `private-inbox-${channelSuffix}`
+            : `inbox-${channelSuffix}`;
         ctx.waitUntil(triggerPusher(env, pusherChannel, 'new_email', {
             id: emailId, key: kvKey,
             from: message.from,

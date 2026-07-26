@@ -253,7 +253,11 @@ async function pushPaymentConfirmed(env, userKey, planId, newExpiry) {
 async function verifyNowPaymentsSig(secret, body, receivedSig) {
     try {
         const parsed = JSON.parse(body);
-        const sorted = JSON.stringify(sortObjectDeep(parsed));
+        // NOWPayments' PHP reference signs over ksort($params) — a TOP-LEVEL-only
+        // key sort — then json_encode. Nested objects/arrays keep their original
+        // order. Sorting recursively (sortObjectDeep) reorders nested keys and
+        // makes every IPN with a nested payload mismatch → all IPNs rejected.
+        const sorted = JSON.stringify(sortTopLevel(parsed));
         const key    = await crypto.subtle.importKey(
             'raw', new TextEncoder().encode(secret),
             { name: 'HMAC', hash: 'SHA-512' }, false, ['sign']
@@ -285,10 +289,11 @@ async function md5Hex(str) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function sortObjectDeep(obj) {
-    if (typeof obj !== 'object' || obj === null) return obj;
-    if (Array.isArray(obj)) return obj.map(sortObjectDeep);
-    return Object.keys(obj).sort().reduce((acc, key) => { acc[key] = sortObjectDeep(obj[key]); return acc; }, {});
+// Sort ONLY the top-level keys, matching NOWPayments' PHP ksort($params).
+// Nested values are left untouched so their key/element order is preserved.
+function sortTopLevel(obj) {
+    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return obj;
+    return Object.keys(obj).sort().reduce((acc, key) => { acc[key] = obj[key]; return acc; }, {});
 }
 
 function constantTimeEqual(a, b) {

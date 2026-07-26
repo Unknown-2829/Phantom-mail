@@ -36,10 +36,9 @@ export async function onRequestGet(context) {
     const { request, env } = context;
     const url = new URL(request.url);
 
-    // Route: /api/track/click?...
-    if (url.pathname.endsWith('/click')) {
-        return handleClick(context);
-    }
+    // NOTE: /api/track/click is handled exclusively by functions/api/track/click.js
+    // (Cloudflare Pages routes the more specific path there). This file only serves
+    // the open pixel — no /click branch here.
 
     // Route: /api/track?id=...&e=open (default)
     const trackingId = url.searchParams.get('id') || url.searchParams.get('t');
@@ -63,72 +62,6 @@ export async function onRequestGet(context) {
     }
 
     return pixelResponse;
-}
-
-// Site root — safe fallback for unknown/mismatched redirects (open-redirect guard).
-const SAFE_FALLBACK = 'https://mail.unknowns.app/';
-
-// True only if `dest` was one of the links actually sent in this tracked email.
-//   - sentLinks: allowlist captured at send time (exact rewritten URLs)
-//   - clickLinks: { url: count } map populated as clicks are recorded
-// Match both the raw dest and its normalized URL form to tolerate re-encoding.
-function isKnownLink(record, dest) {
-    if (!record) return false;
-    const candidates = new Set([dest]);
-    try { candidates.add(new URL(dest).href); } catch {}
-
-    if (Array.isArray(record.sentLinks)) {
-        for (const l of record.sentLinks) {
-            if (candidates.has(l)) return true;
-            try { if (candidates.has(new URL(l).href)) return true; } catch {}
-        }
-    }
-    if (record.clickLinks) {
-        for (const l of Object.keys(record.clickLinks)) {
-            if (candidates.has(l)) return true;
-            try { if (candidates.has(new URL(l).href)) return true; } catch {}
-        }
-    }
-    return false;
-}
-
-// ── Click Redirect ─────────────────────────────────────────────────────────────
-async function handleClick(context) {
-    const { request, env } = context;
-    const url = new URL(request.url);
-    const trackingId = url.searchParams.get('id') || url.searchParams.get('t');
-    const rawUrl     = url.searchParams.get('url') || url.searchParams.get('u');
-
-    // Validate destination URL scheme (only http/https allowed)
-    let destUrl;
-    try {
-        destUrl = new URL(decodeURIComponent(rawUrl || ''));
-        if (!['http:', 'https:'].includes(destUrl.protocol)) {
-            return new Response('Invalid URL', { status: 400 });
-        }
-    } catch {
-        return new Response('Invalid URL', { status: 400 });
-    }
-
-    // ── Open-redirect guard ───────────────────────────────────────────────────
-    // Only 302 to a URL that this trackingId's email actually contained.
-    // Unknown trackingId or a url not present in the stored click-link set → site root.
-    let record = null;
-    if (trackingId && env.EMAILS) {
-        const sentKey = await env.EMAILS.get(`track:${trackingId}`).catch(() => null);
-        if (sentKey) record = await env.EMAILS.get(sentKey, { type: 'json' }).catch(() => null);
-    }
-    if (!isKnownLink(record, destUrl.href)) {
-        return Response.redirect(SAFE_FALLBACK, 302);
-    }
-
-    // Record click in background
-    if (trackingId && env.EMAILS) {
-        context.waitUntil(recordClick(trackingId, destUrl.href, request, env));
-    }
-
-    // Redirect immediately
-    return Response.redirect(destUrl.href, 302);
 }
 
 // ── Record Open ────────────────────────────────────────────────────────────────
@@ -182,59 +115,15 @@ async function recordOpen(trackingId, request, env) {
         });
         if (record.openHistory.length > 30) record.openHistory.length = 30;
 
-        await env.EMAILS.put(sentKey, JSON.stringify(record), { expirationTtl: 30 * 86400 });
+        // Preserve the 15-day TTL used by the sent record everywhere else.
+        await env.EMAILS.put(sentKey, JSON.stringify(record), { expirationTtl: 15 * 86400 });
     } catch (err) {
         console.error('[track/open]', err.message);
     }
 }
 
-// ── Record Click ───────────────────────────────────────────────────────────────
-async function recordClick(trackingId, link, request, env) {
-    try {
-        const ua      = request.headers.get('User-Agent') || '';
-        const uaLower = ua.toLowerCase();
-        if (BOT_UA_PATTERNS.some(p => uaLower.includes(p))) return;
-
-        const sentKey = await env.EMAILS.get(`track:${trackingId}`);
-        if (!sentKey) return;
-
-        const record = await env.EMAILS.get(sentKey, { type: 'json' });
-        if (!record) return;
-
-        const ip      = request.headers.get('CF-Connecting-IP') || 'unknown';
-        const country = request.headers.get('CF-IPCountry') || 'unknown';
-        const ipHash  = await sha256Short(ip);
-
-        // Unique click deduplication
-        const clickHashes = Array.isArray(record.clickIpHashes) ? record.clickIpHashes : [];
-        const isUnique    = ip !== 'unknown' && !clickHashes.includes(ipHash);
-        if (isUnique) {
-            clickHashes.push(ipHash);
-            if (clickHashes.length > 50) clickHashes.shift();
-            record.clickIpHashes = clickHashes;
-            record.uniqueClicks  = (record.uniqueClicks || 0) + 1;
-        }
-
-        record.clicks         = (record.clicks || 0) + 1;
-        record.lastClickAt    = Date.now();
-        record.lastClickLink  = link;
-        record.lastClickCountry = country;
-
-        // Per-link click count
-        const linkMap = record.clickLinks || {};
-        linkMap[link] = (linkMap[link] || 0) + 1;
-        record.clickLinks = linkMap;
-
-        // Click history (last 30)
-        if (!record.clickHistory) record.clickHistory = [];
-        record.clickHistory.unshift({ at: Date.now(), link, country, unique: isUnique });
-        if (record.clickHistory.length > 30) record.clickHistory.length = 30;
-
-        await env.EMAILS.put(sentKey, JSON.stringify(record), { expirationTtl: 30 * 86400 });
-    } catch (err) {
-        console.error('[track/click]', err.message);
-    }
-}
+// Click tracking lives in functions/api/track/click.js — this file owns only the
+// open pixel, so there is no recordClick / open-redirect guard here.
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 

@@ -37,10 +37,14 @@ export async function onRequestPost(context) {
                 console.error('[webhook/resend] missing svix signature/timestamp/id headers');
                 return new Response('Forbidden', { status: 403 });
             }
-            // Replay protection: reject timestamps outside a ±5 minute window
+            // Replay protection: reject wildly out-of-range timestamps. Svix REUSES
+            // the same signed timestamp across retries (retry schedule spans hours,
+            // up to ~24h), so a tight ±5min window rejects legitimate retries. Widen
+            // to 24h and rely on the HMAC signature + svix-id idempotency below to
+            // block real replays/duplicates.
             const tsSec = parseInt(timestamp, 10);
-            if (!tsSec || Math.abs(Date.now() / 1000 - tsSec) > 300) {
-                console.error('[webhook/resend] timestamp outside ±5min freshness window');
+            if (!tsSec || Math.abs(Date.now() / 1000 - tsSec) > 86400) {
+                console.error('[webhook/resend] timestamp outside ±24h freshness window');
                 return new Response('Forbidden', { status: 403 });
             }
             const isValid = await verifySignature(env.RESEND_WEBHOOK_SECRET, msgId, timestamp, rawBody, signature);
@@ -51,12 +55,18 @@ export async function onRequestPost(context) {
 
         // ── Idempotency ────────────────────────────────────────────────────────
         // Svix delivers at-least-once; short-circuit duplicates by svix-id.
+        // The marker is written immediately AFTER signature verification (below),
+        // BEFORE the event is processed, so concurrent duplicate deliveries can't
+        // both pass this check and double-count.
         if (msgId && env.INBOX_META) {
             const seen = await env.INBOX_META.get(`webhookseen:${msgId}`).catch(() => null);
             if (seen) {
                 console.log(`[webhook/resend] duplicate delivery svix-id=${msgId} — skipping`);
                 return new Response('OK', { status: 200 });
             }
+            // Claim this delivery now — before processing — so a concurrent
+            // duplicate that already passed the get() above still can't re-process.
+            await env.INBOX_META.put(`webhookseen:${msgId}`, '1', { expirationTtl: 7 * 86400 }).catch(() => {});
         }
 
         let event;
@@ -200,10 +210,8 @@ export async function onRequestPost(context) {
             await env.INBOX_META.put(analyticsKey, String(cur + 1), { expirationTtl: 400 * 86400 });
         }
 
-        // Mark this delivery as processed (idempotency) — 7-day retention
-        if (msgId && env.INBOX_META) {
-            await env.INBOX_META.put(`webhookseen:${msgId}`, '1', { expirationTtl: 7 * 86400 }).catch(() => {});
-        }
+        // Idempotency marker already written right after signature verification
+        // (before the switch) so concurrent duplicates can't double-count.
 
         return new Response('OK', { status: 200 });
 

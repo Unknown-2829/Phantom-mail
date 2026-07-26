@@ -15,7 +15,8 @@
  *   key     — API key (alternative to X-API-Key header)
  *
  * Quota: each connection consumes 1 receive credit at connect
- * (free=10/day, pro=500/day — the "receive" counter shown by GET /api/v1/status).
+ * (free=50/day, pro=500/day — the shared "receive" counter shown by
+ * GET /api/v1/status, keyed api_usage:read:{key}:{today}).
  * 429 JSON when exhausted, before the stream starts.
  *
  * Events emitted:
@@ -37,7 +38,7 @@
  */
 
 const ALLOWED_DOMAINS = ['unkn0wn.qzz.io', 'phant0m.qzz.io'];
-const FREE_LIMIT      = 10;   // receive credits/day (matches /api/v1/status "receive" quota)
+const FREE_LIMIT      = 50;   // receive credits/day (matches /api/v1/status "receive" quota)
 const PRO_LIMIT       = 500;
 const POLL_MS         = 4000;
 const PING_MS         = 25000;
@@ -112,9 +113,10 @@ export async function onRequestGet(context) {
     const isPro      = keyData.plan === 'pro';
     const dailyLimit = isPro ? PRO_LIMIT : FREE_LIMIT;
 
-    // ── Receive quota (same counter /api/v1/status reports) ──────────────────
+    // ── Receive quota (shared "receive" counter that /api/v1/status reports and
+    //    /api/v1/emails increments — NOT a separate v1recv bucket) ─────────────
     const today    = new Date().toISOString().slice(0, 10);
-    const usageKey = `api_usage:v1recv:${apiKey}:${today}`;
+    const usageKey = `api_usage:read:${apiKey}:${today}`;
     const used     = parseInt((await env.INBOX_META?.get(usageKey)) || '0', 10);
 
     const rlHeaders = {

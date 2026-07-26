@@ -20,6 +20,7 @@ const PERM_EMAIL_DOMAIN = '@unkn0wn.qzz.io';
 // Pusher instance (initialized once)
 let _pusher = null;
 let _pusherChannel  = null; // inbox channel (per address)
+let _pusherChannelName = null; // name of the currently-subscribed inbox channel
 let _pusherSystem   = null; // system/announcements channel
 let _pusherUserChan = null; // user channel (payment confirmations, alerts)
 // Allowed characters for permanent email usernames
@@ -467,11 +468,11 @@ async function generateEmail() {
     _initPusher(); // connect (or reconnect) to the new address channel
     startAddrTtlTimer();
     _prepareClaimKeys(currentEmail); // Ed25519 claim keys (signed-in users only)
-    showToast('✨ Email ready!');
+    showToast('New address ready', 'success');
   } catch (e) {
     $emailDisplay.value = 'Error - Tap Regenerate';
     $emailDisplay.style.opacity = '1';
-    showToast('❌ Error', 'error');
+    showToast('Could not generate address', 'error');
   } finally {
     isGenerating = false;
   }
@@ -516,7 +517,7 @@ function deleteEmail() {
   stopAddrTtlTimer();
   scheduleRender();
   updateTabTitle(0);
-  showToast('🗑️ Deleted');
+  showToast('Deleted', 'success');
   setTimeout(generateEmail, 400);
 }
 
@@ -524,11 +525,20 @@ function deleteEmail() {
 function copyEmail() {
   if (!currentEmail) return;
   // Show feedback immediately (optimistic)
-  showToast('📋 Copied!', 'success');
+  showToast('Copied!', 'success');
+  _flashCopyBtn(); // tactile checkmark swap on the Copy button
   navigator.clipboard.writeText(currentEmail).catch(() => {
     $emailDisplay.select();
     document.execCommand('copy');
   });
+}
+
+// Brief checkmark swap + press feedback on the primary Copy button
+function _flashCopyBtn() {
+  const btn = document.querySelector('.btn-copy-primary');
+  if (!btn || btn.classList.contains('copied')) return;
+  btn.classList.add('copied');
+  setTimeout(() => btn.classList.remove('copied'), 1400);
 }
 
 // ===== Refresh Emails =====
@@ -624,24 +634,42 @@ function renderInbox() {
   if (!$inboxBody) return;
 
   if (emailsList.length === 0) {
+    const hasAddr = currentEmail && currentEmail.includes('@') && !/error/i.test(currentEmail);
+    const addrChip = hasAddr ? `
+        <button class="empty-addr-chip" onclick="copyEmail()" title="Copy your address" aria-label="Copy your address">
+          <span class="empty-addr-text">${escapeHtml(currentEmail)}</span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+        </button>` : '';
     $inboxBody.innerHTML = `
       <div class="empty-inbox">
-        <div class="ghost-mascot">
-          <svg class="ghost-svg" viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <div class="ghost-wrap">
+          <svg class="ghost" viewBox="0 0 100 100" fill="none" aria-hidden="true">
             <defs>
-              <linearGradient id="ghostGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop class="ghost-stop-top" offset="0"/>
-                <stop class="ghost-stop-bot" offset="1"/>
+              <linearGradient id="ghg" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="var(--accent)" stop-opacity="0.22"/>
+                <stop offset="1" stop-color="var(--accent)" stop-opacity="0.05"/>
               </linearGradient>
             </defs>
-            <path d="M20 46a28 28 0 0 1 56 0v34c0 2.4-2.8 3.7-4.6 2.1l-4.6-4a3 3 0 0 0-4.1.2l-4.3 4.4a3 3 0 0 1-4.3 0l-4.3-4.4a3 3 0 0 0-4.2 0l-4.3 4.4a3 3 0 0 1-4.3 0l-4.2-4.3a3 3 0 0 0-4.1-.2l-4.5 4C22 83.7 20 82.4 20 80z"
-                  fill="url(#ghostGrad)" stroke="var(--accent)" stroke-width="2" stroke-opacity="0.55" stroke-linejoin="round"/>
-            <ellipse class="ghost-eye" cx="39" cy="45" rx="4" ry="6"/>
-            <ellipse class="ghost-eye" cx="57" cy="45" rx="4" ry="6"/>
+            <path class="ghost-body" d="M50 10 C30 10 18 26 18 47 V83 c0 3 3.4 4.8 6 3.1 l6 -4 c2 -1.3 4.4 -1.3 6.4 0 l5.8 3.9 c2 1.3 4.4 1.3 6.4 0 l5.8 -3.9 c2 -1.3 4.4 -1.3 6.4 0 l6 4 c2.6 1.7 6 -0.1 6 -3.1 V47 C82 26 70 10 50 10 Z"/>
+            <ellipse class="ghost-eye" cx="40" cy="46" rx="4.4" ry="6"/>
+            <ellipse class="ghost-eye" cx="60" cy="46" rx="4.4" ry="6"/>
           </svg>
+          <span class="ghost-shadow" aria-hidden="true"></span>
         </div>
-        <p class="empty-title">Nothing here yet</p>
-        <p class="empty-subtitle">Emails to your phantom address appear instantly.</p>
+        <p class="empty-title">Your inbox is ready</p>
+        <p class="empty-subtitle">Use your address anywhere — messages appear here the instant they arrive.</p>
+        ${addrChip}
+        <div class="empty-steps">
+          <div class="empty-step"><span class="empty-step-num">1</span><span>Copy your phantom address</span></div>
+          <div class="empty-step"><span class="empty-step-num">2</span><span>Paste it into any signup or form</span></div>
+          <div class="empty-step"><span class="empty-step-num">3</span><span>Watch mail land here in real time</span></div>
+        </div>
+        <div class="empty-pill">
+          <span class="empty-live-dot" aria-hidden="true"></span>
+          <span>Listening for mail…</span>
+        </div>
       </div>
     `;
     return;
@@ -904,9 +932,9 @@ async function viewEmail(index) {
 
       images.forEach(att => {
         const ai = email.attachments.indexOf(att);
-        const src = att.r2Key
-          ? `/api/attachment?key=${encodeURIComponent(att.r2Key)}`
-          : (att.data ? `data:${att.contentType||'image/jpeg'};base64,${att.data}` : null);
+        const src = att.key
+          ? `/api/attachment?key=${encodeURIComponent(att.key)}`
+          : (att.data ? `data:${att.mimeType||att.contentType||'image/jpeg'};base64,${att.data}` : null);
         if (!src) return;
 
         const cell = document.createElement('div');
@@ -941,8 +969,8 @@ async function viewEmail(index) {
       const card = document.createElement('div');
       card.className = 'att-card';
 
-      const src = att.r2Key
-        ? `/api/attachment?key=${encodeURIComponent(att.r2Key)}`
+      const src = att.key
+        ? `/api/attachment?key=${encodeURIComponent(att.key)}`
         : null;
 
       // Helper: wire up the download button after innerHTML is set
@@ -1495,7 +1523,7 @@ async function deleteCurrentEmail() {
       // Attach any R2 attachment keys for cleanup
       if (email.attachments) {
         email.attachments.forEach(att => {
-          if (att.r2Key) params.append('r2key', att.r2Key);
+          if (att.key) params.append('r2key', att.key);
         });
       }
       const res = await fetch(`/api/delete?${params}`, { method: 'DELETE' });
@@ -1522,7 +1550,7 @@ async function deleteCurrentEmail() {
   updateTabTitle(emailsList.filter(e => !e.read).length);
   scheduleRender();
   closeModal();
-  showToast('🗑️ Email deleted');
+  showToast('Deleted', 'success');
 }
 
 // ===== Source Toggle =====
@@ -1581,9 +1609,9 @@ async function downloadAttachment(ei, ai) {
 
   try {
     // R2-backed attachment: fetch from server
-    if (att.r2Key) {
+    if (att.key) {
       showToast('📥 Downloading...');
-      const res = await fetch(`/api/attachment?key=${encodeURIComponent(att.r2Key)}`);
+      const res = await fetch(`/api/attachment?key=${encodeURIComponent(att.key)}`);
       if (!res.ok) throw new Error('Download failed');
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -2138,6 +2166,9 @@ function renderSavedEmails(list) {
   // Track saved addresses so the TTL countdown can hide for them
   _savedAddrSet = new Set(list.map(e => (e.address || '').toLowerCase()));
   startAddrTtlTimer();
+  // If the current address turns out to be a saved/owned one, re-init Pusher
+  // so it upgrades from the PUBLIC inbox channel to the PRIVATE (authed) one.
+  if (_pusher && currentEmail) _initPusher();
 
   if (list.length === 0) {
     container.innerHTML = '<div class="pdash-loading">No saved emails yet. Add one above.</div>';
@@ -2269,8 +2300,8 @@ function copyApiKey() {
   const el = document.getElementById('apikey-value');
   if (!el) return;
   navigator.clipboard.writeText(el.textContent)
-    .then(() => showToast('📋 API key copied!', 'success'))
-    .catch(() => showToast('❌ Copy failed', 'error'));
+    .then(() => showToast('API key copied', 'success'))
+    .catch(() => showToast('Copy failed', 'error'));
 }
 
 /**
@@ -2319,6 +2350,7 @@ async function doSignOut() {
   }
   // Disconnect Pusher cleanly
   if (_pusherChannel)  { try { _pusherChannel.unsubscribe(); } catch(_) {} _pusherChannel = null; }
+  _pusherChannelName = null;
   if (_pusherSystem)   { try { _pusherSystem.unsubscribe(); } catch(_) {} _pusherSystem = null; }
   if (_pusherUserChan) { try { _pusherUserChan.unsubscribe(); } catch(_) {} _pusherUserChan = null; }
   if (_pusher) { try { _pusher.disconnect(); } catch(_) {} _pusher = null; }
@@ -3103,9 +3135,9 @@ async function saveCurrentEmail() {
       body: JSON.stringify({ address: currentEmail })
     });
     const data = await res.json();
-    if (res.ok) { showToast('✅ Email saved to your account!'); loadSavedEmails(); }
-    else showToast('❌ ' + (data.error || 'Could not save'));
-  } catch (e) { showToast('❌ Network error'); }
+    if (res.ok) { showToast('Address saved', 'success'); loadSavedEmails(); }
+    else showToast(data.error || 'Could not save', 'error');
+  } catch (e) { showToast('Network error', 'error'); }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3237,7 +3269,7 @@ async function claimCurrentAddress() {
       if (data.savedToAccount === false) {
         showToast('Claimed, but your saved-address limit is full — upgrade to keep more', 'error');
       } else {
-        showToast("Address claimed — it's yours now", 'success');
+        showToast('Address claimed', 'success');
       }
       _setClaimCtaVisible(false);
       _claimDbDelete(addrHash).catch(() => {});
@@ -4265,7 +4297,7 @@ async function sendComposedEmail() {
     const data = await res.json();
 
     if (res.ok) {
-      showToast('📤 Email sent!', 'success');
+      showToast('Message sent', 'success');
       localStorage.removeItem(_DRAFT_KEY); // discard draft on successful send
       composeAttachments = [];
       renderComposeAttachments();
@@ -4652,8 +4684,6 @@ async function _sha256Short(str) {
 
 async function _initPusher() {
   if (!currentEmail) return;
-  // Disconnect previous channel if address changed
-  if (_pusherChannel) { try { _pusherChannel.unbind_all(); } catch (_) {} }
 
   // Check if Pusher SDK is available (loaded from index.html <script>)
   if (typeof Pusher === 'undefined') {
@@ -4668,7 +4698,10 @@ async function _initPusher() {
     // PUSHER_KEY and PUSHER_CLUSTER injected by wrangler as build-time vars or runtime config
     const PUSHER_KEY     = window.__PUSHER_KEY__     || '';
     const PUSHER_CLUSTER = window.__PUSHER_CLUSTER__ || 'ap2';
-    if (!PUSHER_KEY) { console.warn('[Pusher] No key configured'); return; }
+    // Config is loaded asynchronously by _loadAppConfig(); until the key
+    // arrives, stay quiet and let the ETag polling fallback carry realtime.
+    // _loadAppConfig re-invokes _initPusher once the key is set.
+    if (!PUSHER_KEY) return;
 
     _pusher = new Pusher(PUSHER_KEY, {
       cluster: PUSHER_CLUSTER,
@@ -4702,10 +4735,28 @@ async function _initPusher() {
     if (t) await _subscribeUserChannel(t);
   }
 
-  // Subscribe to inbox channel for this address
+  // Subscribe to inbox channel for this address.
+  //
+  // Channel selection contract (must match the backend publisher exactly):
+  //   • Anonymous / temp / unclaimed address → PUBLIC  "inbox-" + h        (no auth)
+  //   • Signed-in owner of a SAVED address    → PRIVATE "private-inbox-" + h (auth)
+  // Public channels need NO /api/pusher/auth call — this gives anonymous
+  // temp users real-time and avoids the 401 auth spam.
   try {
     const hash = await _sha256Short(currentEmail);
-    const channelName = `private-inbox-${hash}`;
+    const usePrivate = !!token && _isSavedAddress(currentEmail);
+    const channelName = (usePrivate ? 'private-inbox-' : 'inbox-') + hash;
+
+    // Already subscribed to exactly this channel → nothing to do
+    if (_pusherChannelName === channelName && _pusherChannel) return;
+
+    // Tear down any previous inbox channel (address changed or public↔private flip)
+    if (_pusherChannel) {
+      try { _pusherChannel.unbind_all(); } catch (_) {}
+      try { _pusher.unsubscribe(_pusherChannelName); } catch (_) {}
+    }
+
+    _pusherChannelName = channelName;
     _pusherChannel = _pusher.subscribe(channelName);
 
     _pusherChannel.bind('new_email', data => {

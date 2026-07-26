@@ -187,8 +187,13 @@ function rewriteLinksForTracking(html, trackingId, trackingDomain, sentLinks) {
         (match, before, url, after) => {
             // Skip our own tracking domain to avoid double-wrapping
             if (url.includes(trackingDomain + '/api/track')) return match;
-            // Record the exact destination so the redirect endpoint can allow it.
-            if (Array.isArray(sentLinks) && !sentLinks.includes(url)) sentLinks.push(url);
+            // Record the destination in NORMALIZED form (new URL(...).href) so the
+            // allowlist matches the click endpoint's decoded, normalized dest. Storing
+            // the raw href causes encoded links to miss the allowlist and fall back to
+            // the site root on first click. Fall back to the raw url if unparseable.
+            let normalized;
+            try { normalized = new URL(url).href; } catch { normalized = url; }
+            if (Array.isArray(sentLinks) && !sentLinks.includes(normalized)) sentLinks.push(normalized);
             const redirectUrl = `https://${trackingDomain}/api/track/click?id=${trackingId}&url=${encodeURIComponent(url)}`;
             return `${before}${redirectUrl}${after}`;
         }

@@ -108,17 +108,14 @@ export async function onRequestPost(context) {
                     try {
                         const emailData = await env.EMAILS.get(key, { type: 'json' });
                         // Delete R2 attachments if present
-                        if (emailData?.attachments && env.R2) {
+                        if (emailData?.attachments && env.ATTACHMENTS) {
                             await Promise.allSettled(
                                 emailData.attachments
-                                    .filter(a => a.r2Key)
-                                    .map(a => env.R2.delete(a.r2Key))
+                                    .filter(a => a.key)
+                                    .map(a => env.ATTACHMENTS.delete(a.key))
                             );
                         }
                         await env.EMAILS.delete(key);
-                        // Delete from inbox index
-                        const idxKey = `idx:${norm}:${key}`;
-                        await env.EMAILS.delete(idxKey).catch(() => {});
                         processed++;
                     } catch (e) {
                         errors.push({ key, error: e.message });

@@ -98,7 +98,7 @@ async function handleGet(user, env, isPremium, username) {
         }
     }
 
-    const quotas = buildQuotas(isPremium, keyMeta);
+    const quotas = await buildQuotas(isPremium, apiKey, env);
 
     return json({
         apiKey,
@@ -150,7 +150,7 @@ async function handlePost(user, env, username, isPremium) {
         plan,
         createdAt:  Date.now(),
         gracePeriod: { oldKey: oldKey ? '***' + oldKey.slice(-6) : null, expiresIn: '24h' },
-        quotas: buildQuotas(isPremium, null)
+        quotas: await buildQuotas(isPremium, newKey, env)
     });
 }
 
@@ -163,11 +163,37 @@ async function handleDelete(user, env, username) {
     return json({ success: true, message: 'API key revoked immediately' });
 }
 
-function buildQuotas(isPremium, keyMeta) {
+/**
+ * Build the quota block for the dashboard.
+ *
+ * Real usage lives in INBOX_META under the SAME counters the v1 endpoints write
+ * and GET /api/v1/status reports (keyMeta.generateToday/receiveToday/sendToday
+ * were never written — that field always read 0):
+ *   generate → api_usage:gen:{key}:{today}     (generate.js)
+ *   receive  → api_usage:read:{key}:{today}    (emails.js + stream.js)
+ *   send     → api_usage:v1send:{key}:{today}  (send.js)
+ * Limits mirror /api/v1/status exactly: generate 10/200, receive 50/500, send 0/50.
+ */
+async function buildQuotas(isPremium, apiKey, env) {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const read = (kind) =>
+        env.INBOX_META
+            ? env.INBOX_META.get(`api_usage:${kind}:${apiKey}:${today}`)
+                .then(v => parseInt(v || '0', 10))
+                .catch(() => 0)
+            : Promise.resolve(0);
+
+    const [genUsed, receiveUsed, sendUsed] = await Promise.all([
+        read('gen'),
+        read('read'),
+        read('v1send')
+    ]);
+
     return {
-        generate: { limit: isPremium ? 200 : 50,   used: keyMeta?.generateToday || 0 },
-        receive:  { limit: isPremium ? 500 : 50,   used: keyMeta?.receiveToday  || 0 },
-        send:     { limit: isPremium ? 50  : 0,    used: keyMeta?.sendToday     || 0 }
+        generate: { limit: isPremium ? 200 : 10,  used: genUsed     },
+        receive:  { limit: isPremium ? 500 : 50,  used: receiveUsed },
+        send:     { limit: isPremium ? 50  : 0,   used: sendUsed    }
     };
 }
 

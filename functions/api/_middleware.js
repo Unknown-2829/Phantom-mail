@@ -31,6 +31,25 @@
  *   WAF_MAX_BODY_KB=2048           — max request body in KB (2 MB)
  *   WAF_BLOCKED_COUNTRIES=CN,RU   — comma-separated CF country codes to block
  *   WAF_ALLOWED_ORIGINS=*         — CORS allowed origins (space-separated, or *)
+ *
+ * ── KV COST OPTIMIZATION (v3.1) ──────────────────────────────────────────────
+ * The per-request HOT PATH (rate-limit counter + ban check) is backed by the
+ * free Cloudflare Cache API (caches.default) instead of Workers KV. The Cache
+ * API has NO daily quota and NO per-key write limits, so a normal request now
+ * costs ~0 KV operations (previously 2 reads + 1 write on EVERY /api/* request,
+ * which exhausted the free-tier daily KV quota from a single idle polling tab
+ * in ~1.5h).
+ *
+ * PER-COLO APPROXIMATION: caches.default is scoped to the Cloudflare colo
+ * (data-center) serving the request, so rate-limit counts and the ~60s ban
+ * cache are counted/checked per-colo, not globally. This is CORRECT for abuse
+ * control: attack traffic from a single source concentrates in one colo, so an
+ * abuser is throttled locally where it matters. Legitimate distributed traffic
+ * is naturally spread across colos and stays well under limits.
+ *
+ * PERSISTENCE: the rare, must-persist-cross-colo AUTO-BAN WRITE stays in KV
+ * (INBOX_META banip:{ip}). When a ban is written to KV we also prime the local
+ * Cache API ban entry so it takes effect immediately in the current colo.
  */
 
 // ── Route rate limit config ──────────────────────────────────────────────────
@@ -92,6 +111,12 @@ const WAF_SKIP_PREFIXES = [
 // ── CORS: routes that need strict origin enforcement ─────────────────────────
 const STRICT_CORS_PREFIXES = ['/api/admin/', '/api/user/', '/api/auth/'];
 
+// ── Cache API namespace ──────────────────────────────────────────────────────
+// Synthetic origin used only as a cache-key namespace; never fetched over HTTP.
+const WAF_CACHE_BASE = 'https://waf.internal/';
+// How long a banip decision is cached per-colo before re-reading KV (seconds).
+const BAN_CACHE_TTL = 60;
+
 // ─────────────────────────────────────────────────────────────────────────────
 export async function onRequest(context) {
     const { request, env, next } = context;
@@ -136,12 +161,14 @@ export async function onRequest(context) {
         return wafBlock(403, 'Access not available in your region.', ip);
     }
 
-    // ── 2. IP ban check ──────────────────────────────────────────────────────
+    // ── 2. IP ban check (Cache API first, KV on cache miss) ──────────────────
+    // Per-colo: the ban DECISION is cached in caches.default for BAN_CACHE_TTL
+    // seconds. On a cache miss we read KV once and cache the boolean, so a
+    // banned/normal IP costs ~0 KV reads for the following ~60s in this colo.
     if (env.INBOX_META && ip !== 'unknown') {
-        const banned = await env.INBOX_META.get(`banip:${ip}`).catch(() => null);
-        if (banned) {
-            const banData = safeJson(banned);
-            return wafBlock(429, `Your IP has been temporarily blocked. Reason: ${banData?.reason || 'abuse'}. Try again later.`, ip);
+        const banInfo = await getBanDecision(env, ip);
+        if (banInfo?.banned) {
+            return wafBlock(429, `Your IP has been temporarily blocked. Reason: ${banInfo.reason || 'abuse'}. Try again later.`, ip);
         }
     }
 
@@ -189,17 +216,23 @@ export async function onRequest(context) {
         }
     }
 
-    // ── 8. Per-route rate limiting ────────────────────────────────────────────
+    // ── 8. Per-route rate limiting (Cache API counter — ~0 KV ops) ────────────
+    // The sliding-window counter lives in caches.default (no KV quota). Counting
+    // is PER-COLO: each Cloudflare data-center keeps its own counter. This is the
+    // correct trade-off for abuse control — a flood from one source lands in one
+    // colo and is throttled there, while legitimate distributed traffic spreads
+    // across colos and stays under limits. Same thresholds/windows as before.
     let rateLimitInfo = null;
-    if (env.INBOX_META && ip !== 'unknown') {
+    if (ip !== 'unknown') {
         const rule = RATE_RULES.find(([prefix]) => pathname.startsWith(prefix));
         if (rule) {
             const [, limit, windowSec] = rule;
             const overrideKey = rule[0].replace(/\//g, '_').replace(/^_|_$/g, '');
             const effectiveLimit = getEnvOverride(env, overrideKey, limit);
 
-            const bucket  = `waf:rl:${ip}:${pathname.split('/')[3] || 'root'}:${windowKey(windowSec)}`;
-            const current = parseInt((await env.INBOX_META.get(bucket).catch(() => null)) || '0', 10);
+            const seg     = pathname.split('/')[3] || 'root';
+            const rlKey   = new Request(`${WAF_CACHE_BASE}rl/${ip}/${seg}/${windowKey(windowSec)}`);
+            const current = await cacheGetCount(rlKey);
             const remaining = Math.max(0, effectiveLimit - current - 1);
             rateLimitInfo = { limit: effectiveLimit, remaining, window: windowSec };
 
@@ -213,8 +246,8 @@ export async function onRequest(context) {
                 });
             }
 
-            // Increment (fire-and-forget — don't await)
-            env.INBOX_META.put(bucket, String(current + 1), { expirationTtl: windowSec }).catch(() => {});
+            // Increment the per-colo counter (fire-and-forget — don't await)
+            cachePutCount(rlKey, current + 1, windowSec);
         }
     }
 
@@ -238,12 +271,13 @@ function windowKey(windowSec) {
     return String(Math.floor(Date.now() / (windowSec * 1000)));
 }
 
+// Counters below are backed by the per-colo Cache API (no KV ops). Only the
+// resulting BAN WRITE lands in KV (rare, must persist cross-colo).
 async function incrementAuthFail(env, ip) {
     try {
-        const key     = `waf:authfail:${ip}:${windowKey(300)}`; // 5-min window
-        const current = parseInt((await env.INBOX_META.get(key).catch(() => null)) || '0', 10);
-        const next    = current + 1;
-        await env.INBOX_META.put(key, String(next), { expirationTtl: 300 });
+        const key  = new Request(`${WAF_CACHE_BASE}authfail/${ip}/${windowKey(300)}`); // 5-min window
+        const next = await cacheGetCount(key) + 1;
+        await cachePutCount(key, next, 300);
         if (next >= 10) await banIp(env, ip, 'auth_brute_force', 3600);
     } catch (_) {}
 }
@@ -252,10 +286,9 @@ async function incrementAbuse(env, ip, rawThreshold, rawDuration) {
     try {
         const threshold = parseInt(rawThreshold || '20', 10);
         const duration  = parseInt(rawDuration  || '86400', 10);
-        const key       = `waf:abuse:${ip}:${windowKey(3600)}`; // 1-hr window
-        const current   = parseInt((await env.INBOX_META.get(key).catch(() => null)) || '0', 10);
-        const next      = current + 1;
-        await env.INBOX_META.put(key, String(next), { expirationTtl: 3600 });
+        const key  = new Request(`${WAF_CACHE_BASE}abuse/${ip}/${windowKey(3600)}`); // 1-hr window
+        const next = await cacheGetCount(key) + 1;
+        await cachePutCount(key, next, 3600);
         if (next >= threshold) await banIp(env, ip, 'rate_limit_abuse', duration);
     } catch (_) {}
 }
@@ -263,13 +296,105 @@ async function incrementAbuse(env, ip, rawThreshold, rawDuration) {
 async function banIp(env, ip, reason, ttlSec) {
     try {
         if (!env.INBOX_META || !ip || ip === 'unknown') return;
+        // Persistent, cross-colo ban record lives in KV (rare write).
         await env.INBOX_META.put(`banip:${ip}`, JSON.stringify({
             ip, reason,
             bannedAt:  Date.now(),
             expiresAt: Date.now() + ttlSec * 1000
         }), { expirationTtl: ttlSec });
+        // Prime the local Cache API ban entry so the ban takes effect immediately
+        // in THIS colo (otherwise it would wait up to BAN_CACHE_TTL for a refresh).
+        await primeBanCache(ip, true, reason);
         console.warn(`[WAF] Auto-banned ${ip} for ${reason} (${ttlSec}s)`);
     } catch (_) {}
+}
+
+// ── Cache API hot-path helpers ───────────────────────────────────────────────
+// All wrapped so a missing/broken Cache API never throws and breaks API traffic.
+
+// Safe handle to caches.default; null if the Cache API is unavailable.
+function wafCache() {
+    try {
+        return (typeof caches !== 'undefined' && caches.default) ? caches.default : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+// Read an integer counter from the Cache API. Missing/unavailable → 0.
+async function cacheGetCount(keyRequest) {
+    const cache = wafCache();
+    if (!cache) return 0;
+    try {
+        const hit = await cache.match(keyRequest);
+        if (!hit) return 0;
+        const n = parseInt(await hit.text(), 10);
+        return Number.isFinite(n) ? n : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
+// Write an integer counter to the Cache API with a max-age TTL. Fire-and-forget.
+function cachePutCount(keyRequest, count, ttlSec) {
+    const cache = wafCache();
+    if (!cache) return Promise.resolve();
+    try {
+        return cache.put(keyRequest, new Response(String(count), {
+            headers: { 'Cache-Control': `max-age=${ttlSec}` }
+        })).catch(() => {});
+    } catch (_) {
+        return Promise.resolve();
+    }
+}
+
+// Ban decision with per-colo caching. On cache HIT we spend 0 KV ops; on MISS
+// we read KV once, cache the boolean (+ reason) for BAN_CACHE_TTL, and return it.
+async function getBanDecision(env, ip) {
+    const banKey = new Request(`${WAF_CACHE_BASE}ban/${ip}`);
+    const cache  = wafCache();
+
+    if (cache) {
+        try {
+            const hit = await cache.match(banKey);
+            if (hit) {
+                const cached = safeJson(await hit.text());
+                if (cached) return cached; // { banned, reason }
+            }
+        } catch (_) { /* fall through to KV */ }
+    }
+
+    // Cache miss (or no Cache API): read KV once.
+    let decision = { banned: false, reason: null };
+    try {
+        const banned = await env.INBOX_META.get(`banip:${ip}`).catch(() => null);
+        if (banned) {
+            const banData = safeJson(banned);
+            decision = { banned: true, reason: banData?.reason || 'abuse' };
+        }
+    } catch (_) { /* treat as not-banned on KV error */ }
+
+    // Cache the boolean decision for BAN_CACHE_TTL so the next ~60s is KV-free.
+    if (cache) {
+        try {
+            await cache.put(banKey, new Response(JSON.stringify(decision), {
+                headers: { 'Cache-Control': `max-age=${BAN_CACHE_TTL}` }
+            }));
+        } catch (_) { /* non-fatal */ }
+    }
+    return decision;
+}
+
+// Immediately reflect a fresh KV ban in the local colo's Cache API.
+async function primeBanCache(ip, banned, reason) {
+    const cache = wafCache();
+    if (!cache) return;
+    try {
+        await cache.put(new Request(`${WAF_CACHE_BASE}ban/${ip}`),
+            new Response(JSON.stringify({ banned, reason: reason || null }), {
+                headers: { 'Cache-Control': `max-age=${BAN_CACHE_TTL}` }
+            }));
+    } catch (_) { /* non-fatal */ }
 }
 
 function wafBlock(status, message, ip, extraHeaders = {}) {

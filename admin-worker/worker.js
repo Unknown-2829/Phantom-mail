@@ -96,13 +96,79 @@ async function hmacSha256Hex(secret, message) {
 }
 
 /**
- * Pusher body hash. MD5 is not available in Workers' crypto.subtle — this is the
- * exact working stand-in ported from functions/api/admin/index.js (SHA-256
- * truncated to 32 hex chars). Pusher accepts it as a content hash.
+ * Pusher body hash. Pusher's REST API validates `body_md5` as a REAL MD5 of the
+ * request body and rejects any other digest, so a SHA-256 stand-in (the previous
+ * implementation) silently failed with 401 "invalid signature". MD5 is not
+ * available in Workers' crypto.subtle, so this is a pure-JS RFC 1321 MD5 that
+ * hashes UTF-8 bytes and returns 32 lowercase hex chars.
  */
-async function md5Hex(str) {
-    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+function md5Hex(str) {
+    const bytes = new TextEncoder().encode(str); // UTF-8 — matches the bytes Pusher hashes
+
+    const rotl = (x, c) => (x << c) | (x >>> (32 - c));
+    const add32 = (a, b) => (a + b) & 0xffffffff;
+
+    // Per-round shift amounts and precomputed sine-derived constants (K[i]).
+    const S = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+    ];
+    const K = [];
+    for (let i = 0; i < 64; i++) {
+        K[i] = (Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296)) >>> 0;
+    }
+
+    // Pad: append 0x80, then zeros, then the 64-bit little-endian bit length.
+    const origLenBits = bytes.length * 8;
+    let paddedLen = bytes.length + 1;
+    while (paddedLen % 64 !== 56) paddedLen++;
+    const msg = new Uint8Array(paddedLen + 8);
+    msg.set(bytes);
+    msg[bytes.length] = 0x80;
+    // 64-bit length, little-endian (high 32 bits assumed 0 for our small payloads).
+    msg[paddedLen]     = origLenBits         & 0xff;
+    msg[paddedLen + 1] = (origLenBits >>> 8)  & 0xff;
+    msg[paddedLen + 2] = (origLenBits >>> 16) & 0xff;
+    msg[paddedLen + 3] = (origLenBits >>> 24) & 0xff;
+
+    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+
+    const M = new Uint32Array(16);
+    for (let off = 0; off < msg.length; off += 64) {
+        for (let i = 0; i < 16; i++) {
+            const j = off + i * 4;
+            M[i] = msg[j] | (msg[j + 1] << 8) | (msg[j + 2] << 16) | (msg[j + 3] << 24);
+        }
+
+        let A = a0, B = b0, C = c0, D = d0;
+        for (let i = 0; i < 64; i++) {
+            let F, g;
+            if (i < 16)      { F = (B & C) | (~B & D);           g = i; }
+            else if (i < 32) { F = (D & B) | (~D & C);           g = (5 * i + 1) % 16; }
+            else if (i < 48) { F = B ^ C ^ D;                    g = (3 * i + 5) % 16; }
+            else             { F = C ^ (B | (~D & 0xffffffff));  g = (7 * i) % 16; }
+
+            F = add32(add32(add32(F, A), K[i]), M[g]);
+            A = D; D = C; C = B;
+            B = add32(B, rotl(F, S[i]));
+        }
+
+        a0 = add32(a0, A);
+        b0 = add32(b0, B);
+        c0 = add32(c0, C);
+        d0 = add32(d0, D);
+    }
+
+    const toHexLE = (n) => {
+        let out = '';
+        for (let i = 0; i < 4; i++) {
+            out += ((n >>> (i * 8)) & 0xff).toString(16).padStart(2, '0');
+        }
+        return out;
+    };
+    return toHexLE(a0) + toHexLE(b0) + toHexLE(c0) + toHexLE(d0);
 }
 
 /** Address hash — must match backend (lowercase + trim before hashing). */
@@ -216,7 +282,7 @@ async function pusherTrigger(env, channel, eventName, data) {
         const cluster   = env.PUSHER_CLUSTER || 'ap2';
         const timestamp = String(Math.floor(Date.now() / 1000));
         const bodyStr   = JSON.stringify({ channel, name: eventName, data: JSON.stringify(data) });
-        const bodyHash  = await md5Hex(bodyStr);
+        const bodyHash  = md5Hex(bodyStr);
         const authStr   = `POST\n/apps/${env.PUSHER_APP_ID}/events\n` +
             `auth_key=${env.PUSHER_KEY}&auth_timestamp=${timestamp}&auth_version=1.0` +
             `&body_md5=${bodyHash}`;

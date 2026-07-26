@@ -78,7 +78,7 @@ export async function onRequestGet(context) {
         // ── Rate Limits (informational for clients) ─────────────────────────
         rateLimits: {
             generatePerDay:  { free: 50,  pro: 200 },
-            sendPerDay:      { free: 0,   pro: 50  },
+            sendPerDay:      { free: 3,   pro: 25  },
             savedAddresses:  { free: 1,   pro: 15  },
             apiCallsPerMin:  { free: 0,   pro: 100 },
             attachmentMb:    { free: 10,  pro: 25  }
