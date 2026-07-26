@@ -2399,44 +2399,19 @@ function _updateSourceBtn(isSource) {
   }
 }
 
+// Open the full raw message (reconstructed RFC 822 — headers + body) in a new
+// tab via the standalone viewer, instead of an inline toggle. The viewer fetches
+// /api/email/raw with the session token, highlights headers, and offers copy /
+// download .eml.
 function viewSource() {
   if (currentViewIndex < 0) return;
   const email = emailsList[currentViewIndex];
   if (!email) return;
-
-  if (_isSourceView) {
-    // Toggle back to normal email view
-    _isSourceView = false;
-    _updateSourceBtn(false);
-    viewEmail(currentViewIndex);
-    return;
-  }
-
-  _isSourceView = true;
-  _updateSourceBtn(true);
-
-  const source = email.rawSource || email.htmlBody || email.textBody || email.body || 'No source';
-  const body = document.getElementById('modal-body');
-
-  body.innerHTML = `
-    <div class="source-view-wrap">
-      <div class="source-view-toolbar">
-        <span class="source-view-label">Raw Source</span>
-        <button class="source-copy-btn" id="source-copy-btn">📋 Copy</button>
-      </div>
-      <pre class="source-code-block" id="source-code-pre">${escapeHtml(source)}</pre>
-    </div>`;
-
-  document.getElementById('source-copy-btn').addEventListener('click', () => {
-    const preEl = document.getElementById('source-code-pre');
-    const text = preEl ? preEl.textContent : '';
-    const btn = document.getElementById('source-copy-btn');
-    navigator.clipboard.writeText(text).then(() => {
-      if (btn) { btn.textContent = '✅ Copied!'; setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000); }
-    }).catch(() => {
-      if (btn) { btn.textContent = '⚠️ Copy failed'; setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000); }
-    });
-  });
+  const key = email._key || email.key;
+  if (!key) { showToast('Raw source is not available for this message', 'error'); return; }
+  const url = '/raw-email.html?key=' + encodeURIComponent(key) +
+              '&address=' + encodeURIComponent(currentEmail || (email.to || ''));
+  window.open(url, '_blank', 'noopener');
 }
 
 async function downloadAttachment(ei, ai) {
