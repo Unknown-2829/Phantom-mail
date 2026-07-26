@@ -652,11 +652,11 @@ function renderInbox() {
                 <stop offset="1" stop-color="var(--accent)" stop-opacity="0.05"/>
               </linearGradient>
             </defs>
-            <path class="ghost-body" d="M50 10 C30 10 18 26 18 47 V83 c0 3 3.4 4.8 6 3.1 l6 -4 c2 -1.3 4.4 -1.3 6.4 0 l5.8 3.9 c2 1.3 4.4 1.3 6.4 0 l5.8 -3.9 c2 -1.3 4.4 -1.3 6.4 0 l6 4 c2.6 1.7 6 -0.1 6 -3.1 V47 C82 26 70 10 50 10 Z"/>
-            <ellipse class="ghost-eye" cx="40" cy="46" rx="4.4" ry="6"/>
-            <ellipse class="ghost-eye" cx="60" cy="46" rx="4.4" ry="6"/>
-            <circle class="ghost-shine" cx="38.2" cy="43.6" r="1.5"/>
-            <circle class="ghost-shine" cx="58.2" cy="43.6" r="1.5"/>
+            <path class="ghost-body" d="M50 10 C32 10 18 26 18 47 V80 q8 10 16 0 q8 10 16 0 q8 10 16 0 q8 10 16 0 V47 C82 26 68 10 50 10 Z"/>
+            <ellipse class="ghost-eye" cx="41" cy="46" rx="4.4" ry="6"/>
+            <ellipse class="ghost-eye" cx="59" cy="46" rx="4.4" ry="6"/>
+            <circle class="ghost-shine" cx="39.2" cy="43.6" r="1.5"/>
+            <circle class="ghost-shine" cx="57.2" cy="43.6" r="1.5"/>
           </svg>
           <span class="ghost-shadow" aria-hidden="true"></span>
         </div>
