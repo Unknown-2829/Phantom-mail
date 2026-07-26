@@ -506,6 +506,18 @@ export default {
             }
         });
 
+        // Bump the per-address version so GET /api/emails detects new mail via a
+        // single cheap read instead of a list() on every poll (KV list() is the
+        // scarce op). Any change flips the value -> the poll ETag changes -> the
+        // client fetches. Lost increments under concurrency are harmless (the
+        // value still changes). Fire-and-forget; never blocks mail storage.
+        ctx.waitUntil(
+            env.INBOX_META.get(`meta:${addressHash}.v`)
+                .then(v => env.INBOX_META.put(`meta:${addressHash}.v`,
+                    String((parseInt(v, 10) || 0) + 1), { expirationTtl: SAVED_TTL_SEC }))
+                .catch(() => {})
+        );
+
         // 8. Real-time Pusher push (fire-and-forget)
         //    SAVED / claimed / owned address -> PRIVATE channel (auth-gated owner).
         //    TEMP / unsaved / anonymous address -> PUBLIC channel (no auth; anon gets real-time).

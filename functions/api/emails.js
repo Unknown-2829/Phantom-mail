@@ -83,33 +83,27 @@ export async function onRequestGet(context) {
         const gate = await requireAddressOwner(env, request, addressHash);
         if (!gate.ok) return gate.response;
 
-        // List with pagination
-        const listResult = await env.EMAILS.list({ prefix, limit, cursor });
-
-        // ── Build ETag from key names + state version BEFORE any get() ────────
-        // Fold email state (read/starred) into the ETag so cross-device sync
-        // works over polling. Use per-key list metadata (set at ingest) AND a
-        // per-address version counter meta:{addrHash}.v that PATCH/batch/delete
-        // bump — because list metadata goes stale after an in-place re-PUT, the
-        // counter guarantees state changes are always reflected in the ETag.
-        const stateParts = listResult.keys.map(k => {
-            const m = k.metadata;
-            if (m && (m.read !== undefined || m.starred !== undefined)) {
-                return `${k.name}#${m.read ? 1 : 0}${m.starred ? 1 : 0}`;
-            }
-            return k.name;
-        });
+        // ── CHEAP change-detection FIRST (avoid list() on unchanged polls) ────
+        // KV list() is the scarcest/most-expensive op (1000/day free, 10x a read
+        // paid). email-handler bumps meta:{addrHash}.v on every new mail, and
+        // PATCH/batch/delete bump it on state changes, so the version captures
+        // ALL inbox mutations. Compute the ETag from (address + version + cursor)
+        // and return 304 WITHOUT any list() when the client already has it — the
+        // common case for a polling inbox. list() only runs when v changed.
         const version = (await env.INBOX_META.get(`meta:${addressHash}.v`)) || '0';
-        const etag = `"${await sha256Hex(stateParts.join(',') + '|' + version)}"`;
+        const etag = `"${await sha256Hex(address + '|v=' + version + '|c=' + (cursor || ''))}"`;
         const clientEtag = request.headers.get('If-None-Match');
 
         if (clientEtag && clientEtag === etag) {
-            // No changes — save bandwidth (return BEFORE any get())
+            // Nothing changed since the client last fetched — 0 list(), 0 get().
             return new Response(null, {
                 status: 304,
                 headers: { 'ETag': etag, 'Cache-Control': 'no-store' }
             });
         }
+
+        // Changed (or first load) → now it's worth a list()
+        const listResult = await env.EMAILS.list({ prefix, limit, cursor });
 
         // Fetch full records (strip heavy body fields for list view)
         const emailsRaw = await Promise.all(
