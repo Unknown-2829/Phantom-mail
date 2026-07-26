@@ -34,6 +34,11 @@ function domainKey(domain) {
     return domain.split('.')[0];
 }
 
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
 export async function onRequestOptions() {
     return new Response(null, {
         status: 204,
@@ -111,6 +116,22 @@ export async function onRequestGet(context) {
         const addrHash   = await sha256Hex(address);
         const dKey       = domainKey(domain);
         const prefix     = `email:${dKey}:${addrHash}:`;
+
+        // ── Ownership gate: an API key must not read another account's ────────
+        // protected (claimed/saved) inbox. Compare normalized userId vs owner.
+        const metaStr = await env.INBOX_META.get(`meta:${addrHash}`);
+        if (metaStr) {
+            let meta = {};
+            try { meta = JSON.parse(metaStr); } catch (_) { meta = {}; }
+            const protectedAddr = meta.isSaved === true || !!meta.owner || !!meta.claimedBy;
+            if (protectedAddr) {
+                const ownerVal = meta.owner || meta.claimedBy;
+                if (normalizeUser(keyData.userId) !== normalizeUser(ownerVal)) {
+                    return json({ error: 'This address is claimed by another account.' }, 403, rlHeaders);
+                }
+            }
+        }
+
         const listResult = await env.EMAILS.list({ prefix, limit: limit * 3, cursor }); // over-fetch for filtering
 
         const allEmails = (await Promise.all(

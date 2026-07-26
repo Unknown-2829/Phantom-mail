@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#00d09c">
   <title>Phantom Mail — API Documentation</title>
-  <meta name="description" content="Phantom Mail Developer API documentation. Generate temporary emails and read messages programmatically.">
+  <meta name="description" content="Phantom Mail Developer API documentation. Generate temporary emails, stream inbox events over SSE, send mail, and claim addresses programmatically.">
   <meta name="robots" content="index, follow">
   <link rel="icon" href="/favicon.ico">
   <link rel="icon" type="image/png" sizes="32x32" href="https://assets.unknowns.app/favicon-32x32.png">
@@ -50,6 +50,7 @@
 
     /* Auth badge */
     .auth-required { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,107,107,0.1); border: 1px solid rgba(255,107,107,0.25); color: #ff9999; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; margin-bottom: 14px; }
+    .auth-required.premium { background: rgba(255,215,0,0.1); border-color: rgba(255,215,0,0.3); color: #ffd700; }
 
     /* Param table */
     .param-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 13px; }
@@ -102,6 +103,9 @@
     .status-200 { color: #00d09c; font-weight: 700; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
     .status-4xx { color: #ff6b6b; font-weight: 700; font-family: 'JetBrains Mono', monospace; font-size: 12px; }
 
+    /* Event type pills */
+    .evt-pill { display: inline-block; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8be9fd; background: rgba(139,233,253,0.08); border: 1px solid rgba(139,233,253,0.2); border-radius: 6px; padding: 2px 8px; margin: 2px 4px 2px 0; }
+
     @media (max-width: 600px) {
       .page-wrap { padding: 24px 16px 60px; }
       .endpoint-header { flex-wrap: wrap; }
@@ -123,7 +127,7 @@
 
   <div class="page-hero">
     <h1>📡 <span>API</span> Documentation</h1>
-    <p>Integrate Phantom Mail into your apps. Generate disposable emails and read messages programmatically.</p>
+    <p>Integrate Phantom Mail into your apps. Generate disposable emails, stream your inbox in real time, send mail, and claim addresses programmatically.</p>
   </div>
 
   <!-- TOC -->
@@ -131,12 +135,16 @@
     <h3>Contents</h3>
     <a href="#getting-started">Getting Started</a>
     <a href="#authentication">Authentication</a>
-    <a href="#rate-limits">Rate Limits</a>
+    <a href="#plans-limits">Plans &amp; Limits</a>
     <a href="#endpoints">Endpoints</a>
     <a href="#ep-generate">— POST /api/v1/generate</a>
     <a href="#ep-emails">— GET /api/v1/emails</a>
+    <a href="#ep-stream">— GET /api/v1/emails/stream (SSE)</a>
+    <a href="#ep-send">— POST /api/v1/send (Premium)</a>
+    <a href="#ep-status">— GET /api/v1/status</a>
+    <a href="#ep-claim">— POST /api/v1/claim</a>
     <a href="#errors">Error Codes</a>
-    <a href="#examples">Code Examples</a>
+    <a href="#fair-use">Fair Use Policy</a>
   </div>
 
   <!-- Getting Started -->
@@ -144,15 +152,15 @@
     <div class="doc-section-title">Getting Started</div>
 
     <div class="info-box">
-      <strong>Premium Feature:</strong> API access requires a Phantom Mail Premium account. Sign in on the main site, go to the Premium Dashboard → API Key tab, and generate your key.
+      <strong>Every API key ties to a Phantom Mail account.</strong> Sign in on the main site, open the Dashboard → API Key tab, and generate your key. Free keys start with <code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">pm_free_</code> and can <strong>receive only</strong>. Premium keys start with <code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">pm_pro_</code> and can receive <em>and</em> send.
     </div>
 
     <div class="base-url-box">
       <span class="base-url-label">Base URL</span>
-      <span class="base-url-value">https://mail.unknowns.app</span>
+      <span class="base-url-value">https://mail.unknowns.app/api/v1</span>
     </div>
 
-    <p style="color:#888;font-size:14px;margin-bottom:8px;">All API endpoints are served over HTTPS. Requests must include your API key in the <code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">X-API-Key</code> header.</p>
+    <p style="color:#888;font-size:14px;margin-bottom:8px;">All API endpoints are served over HTTPS. Requests must include your API key in the <code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">X-API-Key</code> header. Generated addresses use the <code style="color:#00d09c;font-family:'JetBrains Mono',monospace;font-size:12px;">@unkn0wn.qzz.io</code> and <code style="color:#00d09c;font-family:'JetBrains Mono',monospace;font-size:12px;">@phant0m.qzz.io</code> mail domains.</p>
   </div>
 
   <!-- Authentication -->
@@ -164,7 +172,13 @@
       <div class="code-header">
         <span class="code-lang">HTTP Header</span>
       </div>
-      <pre><span class="key">X-API-Key</span>: pm_<span class="str">your32characterapikey...</span></pre>
+      <pre><span class="key">X-API-Key</span>: pm_free_<span class="str">your32characterapikey...</span>
+<span class="cmt"># or a premium key</span>
+<span class="key">X-API-Key</span>: pm_pro_<span class="str">your32characterapikey...</span></pre>
+    </div>
+
+    <div class="info-box">
+      <strong>SSE exception:</strong> the streaming endpoint (<code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">GET /api/v1/emails/stream</code>) also accepts the key as a <code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">?key=</code> query parameter, because the browser <code style="color:#8be9fd;font-family:'JetBrains Mono',monospace;font-size:12px;">EventSource</code> API cannot set custom headers.
     </div>
 
     <div class="warn-box">
@@ -172,25 +186,40 @@
     </div>
   </div>
 
-  <!-- Rate Limits -->
-  <div class="doc-section" id="rate-limits">
-    <div class="doc-section-title">Rate Limits</div>
-    <p style="color:#bbb;font-size:14px;margin-bottom:16px;">Rate limits are applied per API key, per day (UTC reset at midnight).</p>
+  <!-- Plans & Limits -->
+  <div class="doc-section" id="plans-limits">
+    <div class="doc-section-title">Plans &amp; Limits</div>
+    <p style="color:#bbb;font-size:14px;margin-bottom:16px;">API limits are applied per key, per day (UTC reset at midnight).</p>
 
     <div class="rate-table">
       <div class="rate-row head">
-        <div>Plan</div>
-        <div>Requests / Day</div>
-        <div>Notes</div>
+        <div>Capability</div>
+        <div>Free (pm_free_)</div>
+        <div>Premium (pm_pro_)</div>
       </div>
       <div class="rate-row">
-        <div style="color:#ffd700;font-weight:600;">⭐ Premium</div>
-        <div style="color:#00d09c;font-weight:700;">10,000</div>
-        <div style="color:#888;">High-volume use</div>
+        <div style="color:#ccc;">API receive</div>
+        <div style="color:#00d09c;font-weight:700;">10 / day</div>
+        <div style="color:#00d09c;font-weight:700;">500 / day</div>
+      </div>
+      <div class="rate-row">
+        <div style="color:#ccc;">API send</div>
+        <div style="color:#ff6b6b;font-weight:700;">Blocked</div>
+        <div style="color:#00d09c;font-weight:700;">50 / day</div>
+      </div>
+      <div class="rate-row">
+        <div style="color:#ccc;">Custom handle / domain choice</div>
+        <div style="color:#666;">❌</div>
+        <div style="color:#00d09c;font-weight:700;">✓</div>
+      </div>
+      <div class="rate-row">
+        <div style="color:#ccc;">Inbox retention</div>
+        <div style="color:#888;">1 hour</div>
+        <div style="color:#888;">15 days</div>
       </div>
     </div>
 
-    <p style="color:#888;font-size:13px;margin-top:12px;">When you exceed the rate limit, you'll receive a <span class="status-4xx">429</span> response with <code style="color:#ffd700;font-size:12px">X-RateLimit-Limit</code> and <code style="color:#ffd700;font-size:12px">X-RateLimit-Remaining</code> info in the response body.</p>
+    <p style="color:#888;font-size:13px;margin-top:12px;"><strong style="color:#ff9999;">API send is blocked for free keys.</strong> Calling <code style="color:#ffd700;font-size:12px">POST /api/v1/send</code> with a <code style="color:#ffd700;font-size:12px">pm_free_</code> key returns <span class="status-4xx">403</span>. When you exceed a daily limit you'll receive a <span class="status-4xx">429</span> response.</p>
   </div>
 
   <!-- Endpoints -->
@@ -204,55 +233,41 @@
       <div class="endpoint-header">
         <span class="method-badge post">POST</span>
         <span class="endpoint-path">/api/v1/generate</span>
-        <span class="endpoint-desc">Generate a temporary email address</span>
+        <span class="endpoint-desc">Generate a disposable email address</span>
       </div>
       <div class="endpoint-body">
         <span class="auth-required">🔑 Requires API Key</span>
 
-        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Generates a new disposable email address. Optionally specify a custom username (Premium only). The address expires in 1 hour by default.</p>
-
-        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Request Headers</p>
-        <table class="param-table" style="margin-bottom:20px;">
-          <thead><tr><th>Header</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
-          <tbody>
-            <tr><td class="param-name">X-API-Key</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">Your Premium API key</td></tr>
-          </tbody>
-        </table>
+        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Generates a new disposable address with a server-side, human-looking username. No address history is stored — the returned <code style="color:#00d09c;font-size:11px">keyId</code> is the only way to re-claim the address later (see <a href="#ep-claim" style="color:#00d09c;text-decoration:none;">/api/v1/claim</a>). Premium keys may request a specific domain and a custom handle.</p>
 
         <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Request Body (JSON, optional)</p>
         <table class="param-table" style="margin-bottom:20px;">
           <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td class="param-name">username</td><td class="param-type">string</td><td class="param-opt">Optional</td><td class="param-desc">Custom username (3–30 chars, a-z 0-9 . _ -). Generates <code style="color:#00d09c;font-size:11px">{username}@unknownlll2829.qzz.io</code>. Premium only.</td></tr>
+            <tr><td class="param-name">domain</td><td class="param-type">string</td><td class="param-opt">Optional</td><td class="param-desc">Mail domain: <code style="color:#00d09c;font-size:11px">unkn0wn.qzz.io</code> or <code style="color:#00d09c;font-size:11px">phant0m.qzz.io</code>. Premium only; defaults to a random domain.</td></tr>
+            <tr><td class="param-name">handle</td><td class="param-type">string</td><td class="param-opt">Optional</td><td class="param-desc">Custom handle (3–30 chars, a-z 0-9 . _ -). <strong>Premium only.</strong></td></tr>
           </tbody>
         </table>
 
         <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Responses</p>
 
-        <p style="margin-bottom:6px;font-size:12px;"><span class="status-200">200 OK</span> — Email generated successfully</p>
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-200">200 OK</span> — Address generated</p>
         <div class="code-block">
           <div class="code-header"><span class="code-lang">JSON</span></div>
           <pre>{
   <span class="key">"success"</span>: <span class="val">true</span>,
-  <span class="key">"email"</span>: <span class="str">"cooluser42@unknownlll2829.qzz.io"</span>,
+  <span class="key">"address"</span>: <span class="str">"silentfox482@unkn0wn.qzz.io"</span>,
+  <span class="key">"keyId"</span>: <span class="str">"k_9f3a...b21c"</span>,
   <span class="key">"expiresIn"</span>: <span class="num">3600</span>,
-  <span class="key">"usage"</span>: {
-    <span class="key">"today"</span>: <span class="num">5</span>,
-    <span class="key">"limit"</span>: <span class="num">10000</span>
-  }
+  <span class="key">"usage"</span>: { <span class="key">"today"</span>: <span class="num">1</span>, <span class="key">"limit"</span>: <span class="num">10</span> }
 }</pre>
         </div>
+        <p style="color:#888;font-size:12px;margin:-4px 0 14px;"><code style="color:#00d09c;font-size:11px">keyId</code> maps to the Ed25519 key held at generation. Store it to re-claim the address later. <code style="color:#ffd700;font-size:11px">expiresIn</code> is 3600 (1 h) for free keys; premium addresses can be saved for 15-day retention.</p>
 
-        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">400 Bad Request</span> — Invalid username</p>
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">403 Forbidden</span> — Custom handle/domain on a free key</p>
         <div class="code-block">
           <div class="code-header"><span class="code-lang">JSON</span></div>
-          <pre>{ <span class="key">"error"</span>: <span class="str">"Username must be 3-30 characters"</span> }</pre>
-        </div>
-
-        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">429 Too Many Requests</span> — Rate limit exceeded</p>
-        <div class="code-block">
-          <div class="code-header"><span class="code-lang">JSON</span></div>
-          <pre>{ <span class="key">"error"</span>: <span class="str">"Rate limit exceeded"</span>, <span class="key">"limit"</span>: <span class="num">10000</span>, <span class="key">"used"</span>: <span class="num">10000</span> }</pre>
+          <pre>{ <span class="key">"error"</span>: <span class="str">"Custom handle requires Premium"</span> }</pre>
         </div>
       </div>
     </div>
@@ -269,13 +284,13 @@
       <div class="endpoint-body">
         <span class="auth-required">🔑 Requires API Key</span>
 
-        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Returns all received emails for a given address. The address must exist (previously generated via the API or the web interface).</p>
+        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Returns received emails for a given address. Counts against your daily <strong>receive</strong> limit (10/day free, 500/day premium). Supports <code style="color:#ffd700;font-size:11px">ETag</code> / <code style="color:#ffd700;font-size:11px">If-None-Match</code> for cheap polling — a <span class="status-200">304</span> response does not count against your limit.</p>
 
         <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Query Parameters</p>
         <table class="param-table" style="margin-bottom:20px;">
           <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
           <tbody>
-            <tr><td class="param-name">address</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">The full email address to check (e.g. <code style="color:#00d09c;font-size:11px">user@unknownlll2829.qzz.io</code>)</td></tr>
+            <tr><td class="param-name">address</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">The full email address to check (e.g. <code style="color:#00d09c;font-size:11px">silentfox482@unkn0wn.qzz.io</code>)</td></tr>
           </tbody>
         </table>
 
@@ -286,11 +301,11 @@
           <div class="code-header"><span class="code-lang">JSON</span></div>
           <pre>{
   <span class="key">"success"</span>: <span class="val">true</span>,
-  <span class="key">"address"</span>: <span class="str">"cooluser42@unknownlll2829.qzz.io"</span>,
-  <span class="key">"count"</span>: <span class="num">2</span>,
+  <span class="key">"address"</span>: <span class="str">"silentfox482@unkn0wn.qzz.io"</span>,
+  <span class="key">"count"</span>: <span class="num">1</span>,
   <span class="key">"emails"</span>: [
     {
-      <span class="key">"id"</span>: <span class="str">"abc123"</span>,
+      <span class="key">"id"</span>: <span class="str">"email_abc123"</span>,
       <span class="key">"from"</span>: <span class="str">"noreply@example.com"</span>,
       <span class="key">"subject"</span>: <span class="str">"Your verification code"</span>,
       <span class="key">"body"</span>: <span class="str">"Your code is 123456"</span>,
@@ -301,10 +316,281 @@
 }</pre>
         </div>
 
-        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">404 Not Found</span> — Email address not found or expired</p>
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">404 Not Found</span> — Address not found or expired</p>
         <div class="code-block">
           <div class="code-header"><span class="code-lang">JSON</span></div>
-          <pre>{ <span class="key">"error"</span>: <span class="str">"Email not found or expired"</span> }</pre>
+          <pre>{ <span class="key">"error"</span>: <span class="str">"Address not found or expired"</span> }</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stream (SSE) Endpoint -->
+  <div id="ep-stream" style="margin-bottom:32px;">
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="method-badge get">GET</span>
+        <span class="endpoint-path">/api/v1/emails/stream</span>
+        <span class="endpoint-desc">Real-time inbox stream (SSE)</span>
+      </div>
+      <div class="endpoint-body">
+        <span class="auth-required">🔑 Requires API Key</span>
+
+        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Opens a <strong>Server-Sent Events</strong> stream that pushes inbox changes in real time — no polling required. The connection stays open, sends a keep-alive comment every <strong>25 seconds</strong>, and browser <code style="color:#8be9fd;font-size:11px">EventSource</code> clients auto-reconnect on disconnect. Because <code style="color:#8be9fd;font-size:11px">EventSource</code> can't set headers, the key may be passed as <code style="color:#ffd700;font-size:11px">?key=</code>.</p>
+
+        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Query Parameters</p>
+        <table class="param-table" style="margin-bottom:20px;">
+          <thead><tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="param-name">address</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">The address to stream (e.g. <code style="color:#00d09c;font-size:11px">silentfox482@unkn0wn.qzz.io</code>)</td></tr>
+            <tr><td class="param-name">key</td><td class="param-type">string</td><td class="param-opt">Optional</td><td class="param-desc">Your API key, if you cannot send the <code style="color:#ffd700;font-size:11px">X-API-Key</code> header (browser <code style="color:#8be9fd;font-size:11px">EventSource</code>).</td></tr>
+          </tbody>
+        </table>
+
+        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Event Types</p>
+        <div style="margin-bottom:16px;">
+          <span class="evt-pill">init</span><span style="color:#888;font-size:12px;">— snapshot of current emails, sent immediately on connect</span><br>
+          <span class="evt-pill">new_email</span><span style="color:#888;font-size:12px;">— a new message arrived (payload = the email object)</span><br>
+          <span class="evt-pill">deleted</span><span style="color:#888;font-size:12px;">— a message was deleted (payload = { id })</span><br>
+          <span class="evt-pill">error</span><span style="color:#888;font-size:12px;">— stream error (e.g. address expired); stream then closes</span><br>
+          <span class="evt-pill">bye</span><span style="color:#888;font-size:12px;">— server is closing the stream gracefully</span>
+        </div>
+
+        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Wire Format</p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">text/event-stream</span></div>
+          <pre><span class="key">event</span>: init
+<span class="key">data</span>: {<span class="str">"address"</span>:<span class="str">"silentfox482@unkn0wn.qzz.io"</span>,<span class="str">"emails"</span>:[]}
+
+<span class="cmt">: keep-alive</span>
+
+<span class="key">event</span>: new_email
+<span class="key">data</span>: {<span class="str">"id"</span>:<span class="str">"email_abc123"</span>,<span class="str">"from"</span>:<span class="str">"noreply@example.com"</span>,<span class="str">"subject"</span>:<span class="str">"Hi"</span>,<span class="str">"timestamp"</span>:1710000000000}
+
+<span class="key">event</span>: deleted
+<span class="key">data</span>: {<span class="str">"id"</span>:<span class="str">"email_abc123"</span>}
+
+<span class="key">event</span>: bye
+<span class="key">data</span>: {<span class="str">"reason"</span>:<span class="str">"server_shutdown"</span>}</pre>
+        </div>
+
+        <p style="color:#aaa;font-size:13px;font-weight:600;margin:20px 0 8px;">Consume the stream (JavaScript / EventSource)</p>
+        <div class="code-block">
+          <div class="code-header">
+            <span class="code-lang">JavaScript</span>
+            <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre><span class="kw">const</span> <span class="key">address</span> = <span class="str">'silentfox482@unkn0wn.qzz.io'</span>;
+<span class="kw">const</span> <span class="key">key</span> = <span class="str">'pm_free_your_api_key_here'</span>;
+<span class="kw">const</span> <span class="key">url</span> = <span class="str">`https://mail.unknowns.app/api/v1/emails/stream`</span>
+  + <span class="str">`?address=${encodeURIComponent(address)}&key=${key}`</span>;
+
+<span class="kw">const</span> <span class="key">es</span> = <span class="kw">new</span> EventSource(url); <span class="cmt">// auto-reconnects</span>
+
+es.addEventListener(<span class="str">'init'</span>, e => {
+  <span class="kw">const</span> snap = JSON.parse(e.data);
+  console.log(<span class="str">'Snapshot:'</span>, snap.emails.length, <span class="str">'emails'</span>);
+});
+es.addEventListener(<span class="str">'new_email'</span>, e => {
+  <span class="kw">const</span> mail = JSON.parse(e.data);
+  console.log(<span class="str">'New:'</span>, mail.from, <span class="str">'—'</span>, mail.subject);
+});
+es.addEventListener(<span class="str">'deleted'</span>, e => console.log(<span class="str">'Deleted'</span>, JSON.parse(e.data).id));
+es.addEventListener(<span class="str">'bye'</span>, () => es.close());
+es.addEventListener(<span class="str">'error'</span>, e => console.warn(<span class="str">'Stream error'</span>, e));</pre>
+        </div>
+
+        <p style="color:#aaa;font-size:13px;font-weight:600;margin:20px 0 8px;">Consume the stream (Python / sseclient)</p>
+        <div class="code-block">
+          <div class="code-header">
+            <span class="code-lang">Python (requests + sseclient)</span>
+            <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre><span class="kw">import</span> json, requests, sseclient  <span class="cmt"># pip install sseclient-py</span>
+
+ADDRESS = <span class="str">"silentfox482@unkn0wn.qzz.io"</span>
+KEY = <span class="str">"pm_free_your_api_key_here"</span>
+URL = <span class="str">"https://mail.unknowns.app/api/v1/emails/stream"</span>
+
+resp = requests.get(
+    URL,
+    params={<span class="str">"address"</span>: ADDRESS},
+    headers={<span class="str">"X-API-Key"</span>: KEY, <span class="str">"Accept"</span>: <span class="str">"text/event-stream"</span>},
+    stream=<span class="val">True</span>,
+)
+client = sseclient.SSEClient(resp)
+<span class="kw">for</span> event <span class="kw">in</span> client.events():
+    <span class="kw">if</span> event.event == <span class="str">"new_email"</span>:
+        mail = json.loads(event.data)
+        print(<span class="str">f"New: {mail['from']} — {mail['subject']}"</span>)
+    <span class="kw">elif</span> event.event == <span class="str">"bye"</span>:
+        <span class="kw">break</span></pre>
+        </div>
+        <p style="color:#888;font-size:12px;margin-top:4px;">On the web app itself, real-time delivery is powered by <strong>Pusher WebSocket push</strong> (cluster <code style="color:#ffd700;font-size:11px">ap2</code>) with ETag polling as a fallback; the SSE endpoint above is the programmatic equivalent for API clients.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Send Endpoint -->
+  <div id="ep-send" style="margin-bottom:32px;">
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="method-badge post">POST</span>
+        <span class="endpoint-path">/api/v1/send</span>
+        <span class="endpoint-desc">Send an email (Premium only)</span>
+      </div>
+      <div class="endpoint-body">
+        <span class="auth-required premium">⭐ Premium API Key Required</span>
+
+        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Sends an email <strong>from one of your Phantom Mail addresses</strong>. Requires a Premium (<code style="color:#ffd700;font-size:11px">pm_pro_</code>) key — free keys receive <span class="status-4xx">403</span>. Anonymous sending is disabled; every send is tied to your account. Limited to <strong>50 sends/day</strong>.</p>
+
+        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Request Body (JSON)</p>
+        <table class="param-table" style="margin-bottom:20px;">
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="param-name">from</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">One of your addresses (e.g. <code style="color:#00d09c;font-size:11px">me@phant0m.qzz.io</code>)</td></tr>
+            <tr><td class="param-name">to</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">Recipient email address</td></tr>
+            <tr><td class="param-name">subject</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">Message subject</td></tr>
+            <tr><td class="param-name">text</td><td class="param-type">string</td><td class="param-opt">Optional*</td><td class="param-desc">Plain-text body</td></tr>
+            <tr><td class="param-name">html</td><td class="param-type">string</td><td class="param-opt">Optional*</td><td class="param-desc">HTML body. *Provide at least one of <code style="color:#ffd700;font-size:11px">text</code> or <code style="color:#ffd700;font-size:11px">html</code>.</td></tr>
+          </tbody>
+        </table>
+
+        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Example Request</p>
+        <div class="code-block">
+          <div class="code-header">
+            <span class="code-lang">cURL</span>
+            <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre>curl -X POST https://mail.unknowns.app/api/v1/send \
+  -H <span class="str">"X-API-Key: pm_pro_your_api_key_here"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{
+    "from": "me@phant0m.qzz.io",
+    "to": "friend@example.com",
+    "subject": "Hello from Phantom Mail",
+    "text": "Sent via the Phantom Mail API."
+  }'</span></pre>
+        </div>
+
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-200">200 OK</span></p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">JSON</span></div>
+          <pre>{ <span class="key">"success"</span>: <span class="val">true</span>, <span class="key">"id"</span>: <span class="str">"msg_7f21ac"</span> }</pre>
+        </div>
+
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">403 Forbidden</span> — Free key attempted to send</p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">JSON</span></div>
+          <pre>{ <span class="key">"error"</span>: <span class="str">"Sending requires a Premium API key"</span> }</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Status Endpoint -->
+  <div id="ep-status" style="margin-bottom:32px;">
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="method-badge get">GET</span>
+        <span class="endpoint-path">/api/v1/status</span>
+        <span class="endpoint-desc">Key info and remaining quota</span>
+      </div>
+      <div class="endpoint-body">
+        <span class="auth-required">🔑 Requires API Key</span>
+
+        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Returns your plan tier and today's usage across receive and send quotas. Useful for checking remaining calls before a batch job.</p>
+
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-200">200 OK</span></p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">JSON</span></div>
+          <pre>{
+  <span class="key">"success"</span>: <span class="val">true</span>,
+  <span class="key">"plan"</span>: <span class="str">"premium"</span>,
+  <span class="key">"usage"</span>: {
+    <span class="key">"receive"</span>: { <span class="key">"today"</span>: <span class="num">42</span>, <span class="key">"limit"</span>: <span class="num">500</span> },
+    <span class="key">"send"</span>:    { <span class="key">"today"</span>: <span class="num">3</span>,  <span class="key">"limit"</span>: <span class="num">50</span> }
+  }
+}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Claim Endpoint -->
+  <div id="ep-claim" style="margin-bottom:32px;">
+    <div class="endpoint-card">
+      <div class="endpoint-header">
+        <span class="method-badge post">POST</span>
+        <span class="endpoint-path">/api/v1/claim</span>
+        <span class="endpoint-desc">Re-claim an address (Ed25519)</span>
+      </div>
+      <div class="endpoint-body">
+        <span class="auth-required">🔑 Requires API Key</span>
+
+        <p style="color:#bbb;font-size:13px;margin-bottom:16px;">Phantom Mail stores <strong>no address history</strong>. Ownership is proven cryptographically: at generation you hold an <strong>Ed25519</strong> key pair. To re-claim a previously-generated address, sign a challenge with that key. Only the holder of the original key can re-claim the address.</p>
+
+        <div class="info-box">
+          <strong>Challenge format:</strong> <code style="color:#ffd700;font-family:'JetBrains Mono',monospace;font-size:12px;">phantom-claim:{address}:{timestamp}</code> — where <code style="color:#ffd700;font-size:11px">timestamp</code> is the current Unix time in milliseconds. Sign the exact UTF-8 bytes of this string with your Ed25519 private key. Send the <code style="color:#ffd700;font-size:11px">publicKey</code> and <code style="color:#ffd700;font-size:11px">signature</code> as <strong>base64</strong>.
+        </div>
+
+        <p style="color:#aaa;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Request Body (JSON)</p>
+        <table class="param-table" style="margin-bottom:20px;">
+          <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td class="param-name">address</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">The address to re-claim</td></tr>
+            <tr><td class="param-name">timestamp</td><td class="param-type">number</td><td class="param-req">Required</td><td class="param-desc">Unix time (ms) used to build the challenge</td></tr>
+            <tr><td class="param-name">publicKey</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">Ed25519 public key, base64</td></tr>
+            <tr><td class="param-name">signature</td><td class="param-type">string</td><td class="param-req">Required</td><td class="param-desc">Ed25519 signature of the challenge, base64</td></tr>
+          </tbody>
+        </table>
+
+        <p style="color:#aaa;font-size:13px;font-weight:600;margin:8px 0 8px;">Build &amp; sign the challenge (JavaScript / Web Crypto)</p>
+        <div class="code-block">
+          <div class="code-header">
+            <span class="code-lang">JavaScript (Web Crypto, Ed25519)</span>
+            <button class="code-copy" onclick="copyCode(this)">Copy</button>
+          </div>
+          <pre><span class="cmt">// keyPair was generated & saved when you first created the address:</span>
+<span class="cmt">// crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign','verify'])</span>
+<span class="kw">const</span> <span class="key">address</span> = <span class="str">'silentfox482@unkn0wn.qzz.io'</span>;
+<span class="kw">const</span> <span class="key">timestamp</span> = Date.now();
+<span class="kw">const</span> <span class="key">challenge</span> = <span class="str">`phantom-claim:${address}:${timestamp}`</span>;
+<span class="kw">const</span> <span class="key">msg</span> = <span class="kw">new</span> TextEncoder().encode(challenge);
+
+<span class="kw">const</span> <span class="key">sigBuf</span> = <span class="kw">await</span> crypto.subtle.sign(
+  { name: <span class="str">'Ed25519'</span> }, keyPair.privateKey, msg
+);
+<span class="kw">const</span> <span class="key">pubRaw</span> = <span class="kw">await</span> crypto.subtle.exportKey(<span class="str">'raw'</span>, keyPair.publicKey);
+
+<span class="kw">const</span> <span class="key">b64</span> = buf => btoa(String.fromCharCode(...<span class="kw">new</span> Uint8Array(buf)));
+
+<span class="kw">const</span> <span class="key">res</span> = <span class="kw">await</span> fetch(<span class="str">'https://mail.unknowns.app/api/v1/claim'</span>, {
+  method: <span class="str">'POST'</span>,
+  headers: {
+    <span class="str">'X-API-Key'</span>: <span class="str">'pm_free_your_api_key_here'</span>,
+    <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>
+  },
+  body: JSON.stringify({
+    address,
+    timestamp,
+    publicKey: b64(pubRaw),
+    signature: b64(sigBuf)
+  })
+});
+console.log(<span class="kw">await</span> res.json()); <span class="cmt">// { success: true, address }</span></pre>
+        </div>
+
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-200">200 OK</span></p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">JSON</span></div>
+          <pre>{ <span class="key">"success"</span>: <span class="val">true</span>, <span class="key">"address"</span>: <span class="str">"silentfox482@unkn0wn.qzz.io"</span> }</pre>
+        </div>
+
+        <p style="margin-bottom:6px;font-size:12px;"><span class="status-4xx">401 Unauthorized</span> — Signature does not match</p>
+        <div class="code-block">
+          <div class="code-header"><span class="code-lang">JSON</span></div>
+          <pre>{ <span class="key">"error"</span>: <span class="str">"Invalid signature"</span> }</pre>
         </div>
       </div>
     </div>
@@ -316,104 +602,26 @@
     <table class="param-table">
       <thead><tr><th>Status</th><th>Code</th><th>Description</th></tr></thead>
       <tbody>
-        <tr><td class="param-type">401</td><td class="param-name">Unauthorized</td><td class="param-desc">API key missing or invalid</td></tr>
         <tr><td class="param-type">400</td><td class="param-name">Bad Request</td><td class="param-desc">Missing or invalid parameters</td></tr>
-        <tr><td class="param-type">403</td><td class="param-name">Forbidden</td><td class="param-desc">Feature requires Premium plan</td></tr>
-        <tr><td class="param-type">404</td><td class="param-name">Not Found</td><td class="param-desc">Resource does not exist or has expired</td></tr>
-        <tr><td class="param-type">429</td><td class="param-name">Too Many Requests</td><td class="param-desc">Daily rate limit exceeded</td></tr>
+        <tr><td class="param-type">401</td><td class="param-name">Unauthorized</td><td class="param-desc">API key missing/invalid, or claim signature mismatch</td></tr>
+        <tr><td class="param-type">403</td><td class="param-name">Forbidden</td><td class="param-desc">Feature requires Premium (e.g. send, custom handle/domain)</td></tr>
+        <tr><td class="param-type">404</td><td class="param-name">Not Found</td><td class="param-desc">Address does not exist or has expired</td></tr>
+        <tr><td class="param-type">429</td><td class="param-name">Too Many Requests</td><td class="param-desc">Daily receive/send limit exceeded</td></tr>
         <tr><td class="param-type">500</td><td class="param-name">Server Error</td><td class="param-desc">Internal server error — try again</td></tr>
       </tbody>
     </table>
   </div>
 
-  <!-- Code Examples -->
-  <div class="doc-section" id="examples">
-    <div class="doc-section-title">Code Examples</div>
-
-    <p style="color:#bbb;font-size:14px;margin-bottom:20px;">Quick start examples in popular languages.</p>
-
-    <p style="color:#aaa;font-size:13px;font-weight:600;margin-bottom:8px;">Generate an email address (JavaScript)</p>
-    <div class="code-block">
-      <div class="code-header">
-        <span class="code-lang">JavaScript (fetch)</span>
-        <button class="code-copy" onclick="copyCode(this)">Copy</button>
-      </div>
-      <pre><span class="kw">const</span> <span class="key">response</span> = <span class="kw">await</span> fetch(<span class="str">'https://mail.unknowns.app/api/v1/generate'</span>, {
-  method: <span class="str">'POST'</span>,
-  headers: {
-    <span class="str">'X-API-Key'</span>: <span class="str">'pm_your_api_key_here'</span>,
-    <span class="str">'Content-Type'</span>: <span class="str">'application/json'</span>
-  },
-  <span class="cmt">// Optional: provide a custom username</span>
-  body: JSON.stringify({ username: <span class="str">'myapp_test'</span> })
-});
-
-<span class="kw">const</span> <span class="key">data</span> = <span class="kw">await</span> response.json();
-console.log(data.email); <span class="cmt">// myapp_test@unknownlll2829.qzz.io</span></pre>
-    </div>
-
-    <p style="color:#aaa;font-size:13px;font-weight:600;margin-bottom:8px;">Check for new emails (JavaScript)</p>
-    <div class="code-block">
-      <div class="code-header">
-        <span class="code-lang">JavaScript (fetch)</span>
-        <button class="code-copy" onclick="copyCode(this)">Copy</button>
-      </div>
-      <pre><span class="kw">const</span> <span class="key">emailAddr</span> = <span class="str">'myapp_test@unknownlll2829.qzz.io'</span>;
-
-<span class="kw">const</span> <span class="key">res</span> = <span class="kw">await</span> fetch(
-  <span class="str">`https://mail.unknowns.app/api/v1/emails?address=${encodeURIComponent(emailAddr)}`</span>,
-  { headers: { <span class="str">'X-API-Key'</span>: <span class="str">'pm_your_api_key_here'</span> } }
-);
-
-<span class="kw">const</span> <span class="key">data</span> = <span class="kw">await</span> res.json();
-console.log(<span class="str">`${data.count} email(s) received`</span>);
-data.emails.forEach(<span class="key">email</span> => {
-  console.log(<span class="str">`From: ${email.from} | Subject: ${email.subject}`</span>);
-});</pre>
-    </div>
-
-    <p style="color:#aaa;font-size:13px;font-weight:600;margin-bottom:8px;">Python example</p>
-    <div class="code-block">
-      <div class="code-header">
-        <span class="code-lang">Python (requests)</span>
-        <button class="code-copy" onclick="copyCode(this)">Copy</button>
-      </div>
-      <pre><span class="kw">import</span> requests
-
-API_KEY = <span class="str">"pm_your_api_key_here"</span>
-BASE = <span class="str">"https://mail.unknowns.app/api/v1"</span>
-HEADERS = {<span class="str">"X-API-Key"</span>: API_KEY}
-
-<span class="cmt"># Generate email</span>
-r = requests.post(<span class="str">f"{BASE}/generate"</span>, headers=HEADERS)
-email = r.json()[<span class="str">"email"</span>]
-print(<span class="str">f"Email: {email}"</span>)
-
-<span class="cmt"># Poll for messages</span>
-r = requests.get(<span class="str">f"{BASE}/emails"</span>, headers=HEADERS, params={<span class="str">"address"</span>: email})
-msgs = r.json().get(<span class="str">"emails"</span>, [])
-<span class="kw">for</span> msg <span class="kw">in</span> msgs:
-    print(<span class="str">f"From: {msg['from']} | {msg['subject']}"</span>)</pre>
-    </div>
-
-    <p style="color:#aaa;font-size:13px;font-weight:600;margin-bottom:8px;">cURL example</p>
-    <div class="code-block">
-      <div class="code-header">
-        <span class="code-lang">cURL</span>
-        <button class="code-copy" onclick="copyCode(this)">Copy</button>
-      </div>
-      <pre><span class="cmt"># Generate a random email</span>
-curl -X POST https://mail.unknowns.app/api/v1/generate \
-  -H <span class="str">"X-API-Key: pm_your_api_key_here"</span>
-
-<span class="cmt"># Check inbox</span>
-curl https://mail.unknowns.app/api/v1/emails?address=user@unknownlll2829.qzz.io \
-  -H <span class="str">"X-API-Key: pm_your_api_key_here"</span></pre>
+  <!-- Fair Use -->
+  <div class="doc-section" id="fair-use">
+    <div class="doc-section-title">Fair Use Policy</div>
+    <div class="warn-box">
+      <strong>Fair use &amp; abuse protection.</strong> Beyond the published per-key daily quotas, Phantom Mail applies additional fair-use and abuse-protection limits — including inbound-rate ceilings and per-IP send limits — to keep the service healthy for everyone. These thresholds are intentionally undisclosed and may adjust dynamically. Legitimate integrations will never notice them; scraping, bulk abuse, or automated flooding may be throttled, temporarily blocked, or have the offending key revoked. See the <a href="/acceptable-use.html" style="color:#00d09c;text-decoration:none;">Acceptable Use Policy</a> for details.
     </div>
   </div>
 
   <div style="text-align:center;padding-top:20px;border-top:1px solid rgba(255,255,255,0.06);">
-    <p style="color:#555;font-size:13px;">Need help? Contact us on <a href="https://t.me/unknownlll2829" target="_blank" style="color:#0088cc;text-decoration:none;">Telegram @unknownlll2829</a></p>
+    <p style="color:#555;font-size:13px;">Need help? Contact <a href="mailto:support@unkn0wn.qzz.io" style="color:#00d09c;text-decoration:none;">support@unkn0wn.qzz.io</a></p>
     <p style="color:#333;font-size:12px;margin-top:6px;">© 2026 Phantom Mail</p>
   </div>
 

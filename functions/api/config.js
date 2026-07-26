@@ -11,6 +11,23 @@
 export async function onRequestGet(context) {
     const { env } = context;
 
+    // ── Active system announcement (admin worker writes announcement:active) ─
+    // Served under the same 5-min CDN cache below, so announcements may lag up
+    // to ~5 minutes appearing/disappearing for clients (acceptable staleness).
+    let announcement = null;
+    if (env.INBOX_META) {
+        try {
+            const v = await env.INBOX_META.get('announcement:active', { type: 'json' });
+            if (v) {
+                announcement = {
+                    text:      v.text || v.message || '',
+                    type:      v.type || 'info',
+                    createdAt: v.createdAt || null
+                };
+            }
+        } catch (_) { /* best-effort — config must never fail on announcement */ }
+    }
+
     return Response.json({
         // ── Identity ────────────────────────────────────────────────────────
         appName:    'Phantom Mail',
@@ -18,6 +35,9 @@ export async function onRequestGet(context) {
         supportEmail: env.SUPPORT_EMAIL || 'support@unkn0wn.qzz.io',
         privacyUrl:   'https://unkn0wn.qzz.io/privacy',
         termsUrl:     'https://unkn0wn.qzz.io/terms',
+
+        // ── Active Announcement (null when none) ────────────────────────────
+        announcement,
 
         // ── Mail Domains ────────────────────────────────────────────────────
         domains: [
@@ -50,7 +70,7 @@ export async function onRequestGet(context) {
             batchEmailActions: true,
             keyboardShortcuts: true,
             darkModeOnly:      true,
-            emailForwarding:   false, // Phase 4
+            emailForwarding:   true,
             aliasAddresses:    false, // Phase 4
             scheduledSend:     false, // Phase 5
         },

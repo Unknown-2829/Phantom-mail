@@ -2,7 +2,23 @@
  * Email Forwarding Management (Premium Feature)
  * POST /api/user/forwarding - Enable/disable forwarding
  * Body: { address: string, forwardTo: string | null }
+ *
+ * Writes forward:{address} into the EMAILS KV — the same binding the
+ * email-handler worker reads to execute forwarding on inbound mail.
+ * Operates on user.savedAddresses (migrates legacy user.savedEmails,
+ * same pattern as saved-emails.js).
  */
+
+export async function onRequestOptions() {
+    return new Response(null, {
+        status: 204,
+        headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+        }
+    });
+}
 
 export async function onRequestPost(context) {
     const { request, env } = context;
@@ -31,17 +47,21 @@ export async function onRequestPost(context) {
         const { address, forwardTo } = await request.json();
         if (!address) return jsonResponse({ error: 'Address required' }, 400);
 
-        const savedEmails = user.savedEmails || [];
-        const emailIndex = savedEmails.findIndex(e => e.address === address);
-        if (emailIndex === -1) return jsonResponse({ error: 'Email not in saved list' }, 404);
+        const normalized = address.toLowerCase().trim();
+
+        // Live field is savedAddresses; fall back to legacy savedEmails and migrate
+        const savedAddresses = user.savedAddresses || user.savedEmails || [];
+        const index = savedAddresses.findIndex(e => e.address === normalized);
+        if (index === -1) return jsonResponse({ error: 'Email not in saved list' }, 404);
 
         if (forwardTo && !forwardTo.includes('@')) return jsonResponse({ error: 'Invalid forwarding email' }, 400);
 
-        savedEmails[emailIndex].forwarding = forwardTo || null;
-        user.savedEmails = savedEmails;
+        savedAddresses[index].forwarding = forwardTo || null;
+        user.savedAddresses = savedAddresses;
+        delete user.savedEmails; // remove old field if present
         await env.EMAILS.put(session.username, JSON.stringify(user));
 
-        const forwardingKey = `forward:${address}`;
+        const forwardingKey = `forward:${normalized}`;
         if (forwardTo) {
             await env.EMAILS.put(forwardingKey, JSON.stringify({ to: forwardTo, userId: session.username, createdAt: Date.now() }));
         } else {
@@ -51,7 +71,7 @@ export async function onRequestPost(context) {
         return jsonResponse({
             success: true,
             message: forwardTo ? `Forwarding enabled to ${forwardTo}` : 'Forwarding disabled',
-            savedEmails
+            savedAddresses
         });
     } catch (error) {
         return jsonResponse({ error: 'Server error' }, 500);

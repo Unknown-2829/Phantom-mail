@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#00e5b3">
+    <title>Offline — Phantom Mail</title>
+    <style>
+        :root {
+            --bg: #07080f;
+            --accent: #00e5b3;
+            --text: #e8eaf2;
+            --muted: #8b90a5;
+            --card: #0d0f1a;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            text-align: center;
+        }
+        .card {
+            max-width: 420px;
+            width: 100%;
+            background: var(--card);
+            border: 1px solid rgba(0, 229, 179, 0.12);
+            border-radius: 16px;
+            padding: 48px 32px;
+        }
+        .ghost {
+            width: 96px;
+            height: 96px;
+            margin: 0 auto 24px;
+            display: block;
+            animation: float 3s ease-in-out infinite;
+        }
+        @keyframes float {
+            0%, 100% { transform: translateY(0); }
+            50%      { transform: translateY(-8px); }
+        }
+        h1 {
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin-bottom: 12px;
+            letter-spacing: -0.01em;
+        }
+        h1 .accent { color: var(--accent); }
+        p {
+            color: var(--muted);
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 28px;
+        }
+        button {
+            background: var(--accent);
+            color: #04120d;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 32px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: opacity 0.15s ease, transform 0.15s ease;
+        }
+        button:hover  { opacity: 0.88; }
+        button:active { transform: scale(0.97); }
+        .status {
+            margin-top: 20px;
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+    </style>
+</head>
+<body>
+    <main class="card">
+        <svg class="ghost" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M48 10c-17.7 0-32 14.3-32 32v34c0 3 3.4 4.7 5.8 2.9l6.2-4.7 7.5 5.6c1.5 1.1 3.5 1.1 5 0l7.5-5.6 7.5 5.6c1.5 1.1 3.5 1.1 5 0l7.5-5.6 6.2 4.7c2.4 1.8 5.8.1 5.8-2.9V42c0-17.7-14.3-32-32-32z"
+                  fill="#0d0f1a" stroke="#00e5b3" stroke-width="3" stroke-linejoin="round"/>
+            <circle cx="37" cy="42" r="4.5" fill="#00e5b3"/>
+            <circle cx="59" cy="42" r="4.5" fill="#00e5b3"/>
+            <path d="M40 56c2.5 2.5 5.3 3.7 8 3.7s5.5-1.2 8-3.7" stroke="#00e5b3" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <h1>You're offline — <span class="accent">Phantom Mail</span> needs a connection.</h1>
+        <p>Your ghost inbox lives in the cloud. Check your network and try again — we'll reconnect automatically the moment you're back online.</p>
+        <button type="button" onclick="location.reload()">Retry</button>
+        <div class="status" id="status">Waiting for connection&hellip;</div>
+    </main>
+    <script>
+        // Auto-reload the moment the connection returns
+        window.addEventListener('online', function () {
+            document.getElementById('status').textContent = 'Back online — reloading…';
+            location.reload();
+        });
+    </script>
+</body>
+</html>

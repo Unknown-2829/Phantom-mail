@@ -65,11 +65,12 @@ export async function onRequestGet(context) {
  * Required bindings: EMAILS (KV), TEMP_EMAILS (KV)
  *
  * Rate limits (stored in KV):
- *   Free/anonymous: 3 sends per day
- *   Premium: 50 sends per day
+ *   Free: 3 sends per day  (sign-in required — anonymous sends are rejected)
+ *   Premium: 25 sends per day
+ *   Hard per-IP ceiling: 30 sends per day regardless of account
  *
  * Body (JSON):
- *   from      - string, must end with @unknownlll2829.qzz.io
+ *   from      - string, must end with @unkn0wn.qzz.io or @phant0m.qzz.io (and be owned by the session)
  *   to        - string or string[], recipient(s)
  *   subject   - string
  *   body      - string (plain text or HTML)
@@ -79,21 +80,31 @@ export async function onRequestGet(context) {
 export async function onRequestPost(context) {
   const { request, env } = context;
 
-  // ── Auth (optional but tracked) ──────────────────────────────
+  // ── Auth (REQUIRED) ──────────────────────────────────────────
+  // Phantom Mail is receive-first; outbound sending requires a valid session.
+  // Anonymous sends are rejected to prevent open-relay style abuse.
   const authHeader = request.headers.get('Authorization') || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   let username = null;
   let isPremium = false;
+  let session = null;
+  let user = null;
 
   if (token) {
     try {
-      const session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
+      session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
       if (session && session.expiresAt > Date.now()) {
         username = session.username;
-        const user = await env.EMAILS.get(session.username, { type: 'json' });
+        user = await env.EMAILS.get(session.username, { type: 'json' });
         if (user) isPremium = !!(user.isPremium && (!user.premiumExpiry || user.premiumExpiry > Date.now()));
+      } else {
+        session = null;
       }
-    } catch (_) {}
+    } catch (_) { session = null; }
+  }
+
+  if (!username || !session) {
+    return jsonResponse({ error: 'Sign in to send email.' }, 401);
   }
 
   // ── Parse body ───────────────────────────────────────────────
@@ -115,6 +126,18 @@ export async function onRequestPost(context) {
   const fromDomain = from.split('@')[1]?.toLowerCase();
   if (!allowedDomains.includes(fromDomain)) {
     return jsonResponse({ error: 'You can only send from @unkn0wn.qzz.io or @phant0m.qzz.io addresses' }, 403);
+  }
+
+  // ── From-ownership ───────────────────────────────────────────
+  // The From address must be the session's current address OR one the user
+  // has explicitly saved — you can only send from an address you own.
+  const fromNorm = from.toLowerCase().trim();
+  const currentNorm = (session.currentAddress || '').toLowerCase().trim();
+  const savedAddresses = user?.savedAddresses || user?.savedEmails || [];
+  const ownsFrom = fromNorm === currentNorm ||
+    savedAddresses.some(e => (e.address || '').toLowerCase().trim() === fromNorm);
+  if (!ownsFrom) {
+    return jsonResponse({ error: 'You can only send from an address you own.' }, 403);
   }
 
   // Validate attachments
@@ -170,20 +193,30 @@ export async function onRequestPost(context) {
   }
 
   // ── Rate limiting ─────────────────────────────────────────────
-  const rateLimitKey = username
-    ? `send_rate:user:${username}`
-    : `send_rate:addr:${from}`;
-  const dailyLimit = isPremium ? 25 : 3; // Free: 3/day | Premium: 25/day
+  const today        = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const rateLimitKey = `send_rate:user:${username}`;
+  const dailyLimit   = isPremium ? 25 : 3; // Free: 3/day | Premium: 25/day
 
-  // ── Resend global quota guard ─────────────────────────────────
+  // Per-IP hard ceiling — caps total sends from one IP regardless of how many
+  // accounts it uses. Independent of the per-user cap above.
+  const ip          = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const IP_DAILY_CAP = 30;
+  const ipRateKey   = `send_rate:ip:${ip}:${today}`;
+  const ipCount     = parseInt((await env.EMAILS.get(ipRateKey)) || '0', 10);
+  if (ip !== 'unknown' && ipCount >= IP_DAILY_CAP) {
+    return jsonResponse({ error: 'Daily send limit reached for your network. Try again tomorrow.' }, 429);
+  }
+
+  // ── Resend global quota guard (read defensively) ──────────────
   const resendQuotaLimit = parseInt(env.RESEND_QUOTA_LIMIT || '3000', 10);
-  const resendToday = new Date().toISOString().slice(0, 10);
-  const resendUsed  = parseInt((await env.INBOX_META?.get(`analytics:emails_sent:${resendToday}`)) || '0', 10);
+  let resendUsed = 0;
+  try {
+    resendUsed = parseInt((await env.INBOX_META?.get(`analytics:emails_sent:${today}`)) || '0', 10) || 0;
+  } catch (_) { resendUsed = 0; }
   if (resendUsed >= resendQuotaLimit) {
     return jsonResponse({ error: 'Email sending quota reached for today. Try again tomorrow.' }, 429);
   }
 
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   let rateData = await env.EMAILS.get(rateLimitKey, { type: 'json' }) || { date: today, count: 0 };
 
   if (rateData.date !== today) {
@@ -191,6 +224,28 @@ export async function onRequestPost(context) {
   }
 
   if (rateData.count >= dailyLimit) {
+    return jsonResponse({
+      error: `Daily send limit reached (${dailyLimit}/day). ${isPremium ? '' : 'Upgrade to Premium for 50/day.'}`
+    }, 429);
+  }
+
+  // ── Reserve a send slot BEFORE calling Resend (race-safe quota) ──
+  // Write a unique slot key first, then count all slots for today. If we're
+  // over the daily limit, delete our own slot and bail — this closes the
+  // parallel-request window where count-then-increment lets everyone through.
+  const slotPrefix = `sendslot:${username}:${today}:`;
+  const slotKey    = `${slotPrefix}${crypto.randomUUID()}`;
+  await env.EMAILS.put(slotKey, '1', { expirationTtl: 2 * 24 * 3600 });
+
+  let slotCount = 0;
+  try {
+    const slots = await env.EMAILS.list({ prefix: slotPrefix });
+    slotCount = slots.keys.length;
+  } catch (_) {
+    slotCount = 0;
+  }
+  if (slotCount > dailyLimit) {
+    await env.EMAILS.delete(slotKey).catch(() => {});
     return jsonResponse({
       error: `Daily send limit reached (${dailyLimit}/day). ${isPremium ? '' : 'Upgrade to Premium for 50/day.'}`
     }, 429);
@@ -234,6 +289,7 @@ export async function onRequestPost(context) {
 
   // ── Call Resend API ───────────────────────────────────────────
   if (!env.RESEND_API_KEY) {
+    await env.EMAILS.delete(slotKey).catch(() => {}); // release reserved slot
     return jsonResponse({ error: 'Email sending not configured' }, 503);
   }
 
@@ -275,9 +331,11 @@ export async function onRequestPost(context) {
 
     if (!resendRes.ok) {
       console.error('Resend error:', resendResult);
+      await env.EMAILS.delete(slotKey).catch(() => {}); // release reserved slot
       return jsonResponse({ error: resendResult.message || 'Failed to send email' }, 502);
     }
   } catch (err) {
+    await env.EMAILS.delete(slotKey).catch(() => {}); // release reserved slot
     return jsonResponse({ error: 'Network error sending email' }, 502);
   }
 
@@ -337,17 +395,29 @@ export async function onRequestPost(context) {
     expirationTtl: 15 * 24 * 3600
   });
 
-  // ── Update rate limit + Resend analytics ─────────────────────
+  // ── Update rate limit + per-IP cap + Resend analytics ────────
+  // The email is already sent; from here on nothing may turn the response
+  // into a 500. Keep the authoritative slot reservation (sendslot:*) and
+  // treat these counters as best-effort book-keeping.
   rateData.count += 1;
   await env.EMAILS.put(rateLimitKey, JSON.stringify(rateData), {
     expirationTtl: 2 * 24 * 3600
-  });
+  }).catch(() => {});
 
-  // Track outbound send in analytics for admin dashboard & quota guard
+  // Increment per-IP daily counter (best-effort).
+  if (ip !== 'unknown') {
+    await env.EMAILS.put(ipRateKey, String(ipCount + 1), { expirationTtl: 2 * 24 * 3600 }).catch(() => {});
+  }
+
+  // Track outbound send in analytics for admin dashboard & quota guard.
+  // Fire-and-forget: a KV 429 on this hot key must NEVER fail a sent email.
   if (env.INBOX_META) {
-    const analyticsKey = `analytics:emails_sent:${new Date().toISOString().slice(0, 10)}`;
-    const cur = parseInt((await env.INBOX_META.get(analyticsKey)) || '0', 10);
-    await env.INBOX_META.put(analyticsKey, String(cur + 1), { expirationTtl: 400 * 86400 });
+    const analyticsKey = `analytics:emails_sent:${today}`;
+    const bumpAnalytics = (async () => {
+      const cur = parseInt((await env.INBOX_META.get(analyticsKey)) || '0', 10);
+      await env.INBOX_META.put(analyticsKey, String(cur + 1), { expirationTtl: 400 * 86400 });
+    })().catch(() => {});
+    context.waitUntil?.(bumpAnalytics);
   }
 
   return jsonResponse({

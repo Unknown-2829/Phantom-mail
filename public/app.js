@@ -14,6 +14,7 @@ const SIGN_IN_BTN_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="
 
 // Supported domains for temp address generation
 const ALLOWED_DOMAINS = ['unkn0wn.qzz.io', 'phant0m.qzz.io'];
+window.ALLOWED_DOMAINS = ALLOWED_DOMAINS;
 // Domain used for permanent / custom email addresses
 const PERM_EMAIL_DOMAIN = '@unkn0wn.qzz.io';
 // Pusher instance (initialized once)
@@ -104,6 +105,10 @@ function init() {
   _initDomainPicker();
   _startSessionExpiryWatch();
   _initKeyboardShortcuts();
+  switchMainTab('inbox');
+
+  // ── Public config (Pusher key fallback + announcement for late joiners) ──
+  _loadAppConfig().catch(() => {});
 
   // ── Session boot via server (authoritative) ─────────────────
   _bootSession().catch(() => {});
@@ -118,6 +123,8 @@ function init() {
     refreshEmails();
     loadSentEmails();
     _initPusher(); // connect real-time after email is known
+    startAddrTtlTimer();
+    _restoreClaimCta();
   } else {
     localStorage.removeItem('tempEmail');
     localStorage.removeItem('emailCreatedAt');
@@ -129,6 +136,33 @@ function init() {
   if (signupEmailInput) {
     signupEmailInput.addEventListener('input', _updateSignupEmailUI);
   }
+
+  // Claim CTA (no inline handler in HTML — wired here)
+  document.getElementById('claim-cta')?.addEventListener('click', () => claimCurrentAddress());
+
+  // PWA shortcut actions (?action=generate|inbox|compose)
+  handlePWAShortcuts();
+}
+
+// ── Boot: /api/config (cached 5 min) → Pusher key fallback + announcement ──
+async function _loadAppConfig() {
+  try {
+    let cfg = _cacheGet('config');
+    if (!cfg) {
+      const res = await fetch('/api/config');
+      if (!res.ok) return;
+      cfg = await res.json();
+      _cacheSet('config', cfg, 5 * 60 * 1000);
+    }
+    if (cfg.pusher) {
+      if (!window.__PUSHER_KEY__ && cfg.pusher.key) window.__PUSHER_KEY__ = cfg.pusher.key;
+      if (!window.__PUSHER_CLUSTER__ && cfg.pusher.cluster) window.__PUSHER_CLUSTER__ = cfg.pusher.cluster;
+      // If realtime could not start earlier because the key was missing, retry now
+      if (!_pusher && currentEmail && window.__PUSHER_KEY__) _initPusher();
+    }
+    const annText = cfg.announcement && (cfg.announcement.text || cfg.announcement.message);
+    if (annText) _showAnnouncementBanner(annText);
+  } catch (_) { /* config is best-effort */ }
 }
 
 // ── Boot: validate session via server & sync all state ──────────
@@ -172,6 +206,7 @@ async function _bootSession() {
     localStorage.setItem('username',   data.username);
     localStorage.setItem('isPremium',  data.isPremium ? 'true' : 'false');
     localStorage.setItem('plan',       data.plan || 'free');
+    if (data.sessionExpiresAt) localStorage.setItem('sessionExpiresAt', String(data.sessionExpiresAt));
     if (data.apiKey) localStorage.setItem('apiKey', data.apiKey);
     else localStorage.removeItem('apiKey');
     if (data.photoURL) localStorage.setItem('photoURL', data.photoURL);
@@ -337,6 +372,63 @@ function showNotification(title, body) {
 // ===== Tab Title =====
 function updateTabTitle(newCount) {
   document.title = newCount > 0 ? `(${newCount}) ${originalTitle}` : originalTitle;
+  // Mobile bottom-nav unread badge stays in sync with the same count
+  const badge = document.getElementById('nav-inbox-badge');
+  if (badge) {
+    if (newCount > 0) {
+      badge.textContent = newCount > 99 ? '99+' : String(newCount);
+      badge.classList.remove('hidden');
+      // Re-trigger the 'pop' animation on every count change
+      badge.classList.remove('pop');
+      void badge.offsetWidth;
+      badge.classList.add('pop');
+    } else {
+      badge.classList.add('hidden');
+      badge.classList.remove('pop');
+    }
+  }
+}
+
+// ===== Main Tabs (Inbox / Sent) =====
+let _mainTab = 'inbox';
+function switchMainTab(tab) {
+  _mainTab = tab === 'sent' ? 'sent' : 'inbox';
+  const inboxBtn = document.getElementById('tab-inbox-btn');
+  const sentBtn  = document.getElementById('tab-sent-btn');
+  if (inboxBtn) inboxBtn.classList.toggle('active', _mainTab === 'inbox');
+  if (sentBtn)  sentBtn.classList.toggle('active',  _mainTab === 'sent');
+  const inboxBody = document.getElementById('inbox-body');
+  const sentWrap  = document.getElementById('sent-box-wrapper');
+  if (inboxBody) inboxBody.classList.toggle('hidden', _mainTab === 'sent');
+  if (sentWrap)  sentWrap.classList.toggle('hidden',  _mainTab !== 'sent');
+  if (_mainTab === 'sent') {
+    // Reuse the existing sent-box machinery: expand the body + render, then refresh
+    if (!sentBoxOpen) toggleSentBox();
+    loadSentEmails();
+  }
+}
+
+// ===== Mobile Views (bottom nav) =====
+let _mobileView = 'inbox';
+function _syncMobileNav(view) {
+  const map = { inbox: 'nav-inbox', saved: 'nav-saved', account: 'nav-account' };
+  Object.entries(map).forEach(([k, id]) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle('active', k === view);
+  });
+}
+function switchMobileView(view) {
+  const prev = _mobileView;
+  document.body.dataset.view = view;
+  _syncMobileNav(view);
+  if (view === 'account') {
+    // Account is a modal, not a view — open it and revert to the previous view
+    if (localStorage.getItem('authToken')) openProfile(); else openAuth();
+    document.body.dataset.view = prev;
+    _syncMobileNav(prev);
+    return;
+  }
+  _mobileView = view;
 }
 
 // ===== Generate Email =====
@@ -372,11 +464,13 @@ async function generateEmail() {
 
     startAutoRefresh();
     _initPusher(); // connect (or reconnect) to the new address channel
+    startAddrTtlTimer();
+    _prepareClaimKeys(currentEmail); // Ed25519 claim keys (signed-in users only)
     showToast('✨ Email ready!');
   } catch (e) {
     $emailDisplay.value = 'Error - Tap Regenerate';
     $emailDisplay.style.opacity = '1';
-    showToast('❌ Error');
+    showToast('❌ Error', 'error');
   } finally {
     isGenerating = false;
   }
@@ -397,6 +491,7 @@ function regenerateEmail() {
   localStorage.removeItem('readIds');
   deletedIds = [];
   readIds = [];
+  _setClaimCtaVisible(false);
 
   scheduleRender();
   generateEmail();
@@ -416,6 +511,8 @@ function deleteEmail() {
   readIds = [];
 
   $emailDisplay.value = '';
+  _setClaimCtaVisible(false);
+  stopAddrTtlTimer();
   scheduleRender();
   updateTabTitle(0);
   showToast('🗑️ Deleted');
@@ -426,7 +523,7 @@ function deleteEmail() {
 function copyEmail() {
   if (!currentEmail) return;
   // Show feedback immediately (optimistic)
-  showToast('📋 Copied!');
+  showToast('📋 Copied!', 'success');
   navigator.clipboard.writeText(currentEmail).catch(() => {
     $emailDisplay.select();
     document.execCommand('copy');
@@ -744,6 +841,7 @@ async function viewEmail(index) {
   // Open the modal immediately so the user sees the header/metadata right away
   _pushModalHistory();
   document.getElementById('email-modal').classList.add('show');
+  document.body.classList.add('reader-open');
   document.body.style.overflow = 'hidden';
 
   const body = document.getElementById('modal-body');
@@ -1366,6 +1464,7 @@ function cleanBrokenChars(text) {
 function closeModal() {
   _popModalHistory();
   document.getElementById('email-modal').classList.remove('show');
+  document.body.classList.remove('reader-open');
   document.body.style.overflow = '';
   currentViewIndex = -1;
   _isSourceView = false;
@@ -1667,8 +1766,19 @@ function updateLogoForUser() {
 
 // ===== Toast =====
 let toastTimer = null;
-function showToast(msg) {
-  $toastMsg.textContent = msg;
+const _TOAST_ICONS = {
+  success: '<svg class="toast-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+  error:   '<svg class="toast-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  info:    '<svg class="toast-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+};
+function showToast(msg, type = 'info') {
+  if (!$toast)    $toast    = document.getElementById('toast');
+  if (!$toastMsg) $toastMsg = document.getElementById('toast-message');
+  if (!$toast || !$toastMsg) return;
+  const t = _TOAST_ICONS[type] ? type : 'info';
+  $toast.classList.remove('toast-success', 'toast-error', 'toast-info');
+  $toast.classList.add('toast-' + t);
+  $toastMsg.innerHTML = _TOAST_ICONS[t] + `<span class="toast-text">${escapeHtml(msg)}</span>`;
   $toast.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => $toast.classList.remove('show'), 2500);
@@ -1826,7 +1936,8 @@ function initAuthState() {
       premBtn.innerHTML = '<i class="purple-star" aria-hidden="true">★</i> Premium';
     }
 
-    closePremiumDashboard();
+    // Dashboard stays visible for logged-out visitors — rendered in locked state
+    updatePremiumDashboard(null, false);
   }
 
   // Update header logo based on premium status
@@ -1899,32 +2010,83 @@ async function refreshPremiumStatus() {
 }
 
 // ===== Premium Dashboard =====
-function closePremiumDashboard() {
-  const dash = document.getElementById('premium-dashboard');
-  if (dash) dash.classList.add('hidden');
-}
-
+// The dashboard is ALWAYS visible. Logged-out and free users see locked states.
 function updatePremiumDashboard(username, isPremium) {
   const dash = document.getElementById('premium-dashboard');
   if (!dash) return;
+  const loggedIn = !!username;
 
   dash.classList.remove('hidden');
-  document.getElementById('pdash-username').textContent = `@${username}`;
+  const userEl = document.getElementById('pdash-username');
+  if (userEl) userEl.textContent = loggedIn ? `@${username}` : 'Guest';
 
-  // Update title based on tier
   const titleEl = dash.querySelector('.pdash-title');
-  if (titleEl) titleEl.textContent = isPremium ? '⭐ Premium Dashboard' : '🔌 Developer Dashboard';
+  if (titleEl) titleEl.textContent = 'Dashboard';
 
-  // Show/hide premium-only tabs (saved=index 0, forwarding=index 1)
-  const tabs = dash.querySelectorAll('.pdash-tab');
-  if (tabs[0]) tabs[0].classList.toggle('hidden', !isPremium);
-  if (tabs[1]) tabs[1].classList.toggle('hidden', !isPremium);
+  // All tabs stay visible — locked content renders inside the panels
+  dash.querySelectorAll('.pdash-tab').forEach(t => t.classList.remove('hidden'));
 
-  // Default active tab
-  switchPDashTab(isPremium ? 'saved' : 'apikey');
+  // Pro upsell card: show for free/logged-out, hide for premium
+  document.querySelectorAll('.panel-upsell').forEach(el => el.classList.toggle('hidden', !!isPremium));
 
-  loadApiKey();
-  if (isPremium) loadSavedEmails();
+  // Custom-handle row: disabled + crown for free/logged-out users
+  _updateCustomHandleLock(loggedIn, isPremium);
+
+  switchPDashTab('saved');
+
+  if (loggedIn) {
+    loadApiKey();
+    loadSavedEmails();
+  } else {
+    _renderLoggedOutDashPanels();
+  }
+}
+
+// Locked-overlay card used by premium-gated panels
+function _lockedOverlayHtml(label) {
+  return `
+    <div class="locked-overlay">
+      <svg class="locked-ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <div class="locked-title">${escapeHtml(label || 'Auto-forwarding')}</div>
+      <div class="locked-sub">Premium feature</div>
+      <a class="locked-upgrade-link" href="/premium.html">Upgrade</a>
+    </div>`;
+}
+
+function _updateCustomHandleLock(loggedIn, isPremium) {
+  const locked = !isPremium;
+  const input  = document.getElementById('perm-username-input');
+  const addBtn = document.querySelector('.pdash-add-btn');
+  const row    = document.querySelector('.pdash-add-row');
+  if (input)  input.disabled  = locked;
+  if (addBtn) addBtn.disabled = locked;
+  if (!row) return;
+  row.classList.toggle('locked', locked);
+  let crown = row.querySelector('.pdash-crown');
+  if (locked && !crown) {
+    crown = document.createElement('span');
+    crown.className = 'pdash-crown';
+    crown.title = 'Premium feature';
+    crown.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 18h20"/><path d="M4 18 2 7l5.5 4L12 4l4.5 7L22 7l-2 11"/></svg>';
+    row.appendChild(crown);
+  } else if (!locked && crown) {
+    crown.remove();
+  }
+}
+
+function _renderLoggedOutDashPanels() {
+  const savedList = document.getElementById('saved-emails-list');
+  if (savedList) savedList.innerHTML = '<div class="pdash-loading">Sign in to keep addresses.</div>';
+  const countEl = document.getElementById('saved-email-count');
+  if (countEl) countEl.textContent = '0/1';
+  const fwdList = document.getElementById('forwarding-list');
+  if (fwdList) fwdList.innerHTML = _lockedOverlayHtml('Auto-forwarding');
+  const apiBox = document.getElementById('apikey-display');
+  if (apiBox) apiBox.innerHTML = `
+    <div class="apikey-signin-prompt">
+      <span>Sign in to get an API key.</span>
+      <button class="auth-link-btn" onclick="openAuth()">Sign in</button>
+    </div>`;
 }
 
 function switchPDashTab(tab) {
@@ -1962,6 +2124,10 @@ function renderSavedEmails(list) {
   const countEl = document.getElementById('saved-email-count');
   const isPremium = localStorage.getItem('isPremium') === 'true';
   if (countEl) countEl.textContent = `${list.length}/${isPremium ? 15 : 1}`;
+
+  // Track saved addresses so the TTL countdown can hide for them
+  _savedAddrSet = new Set(list.map(e => (e.address || '').toLowerCase()));
+  startAddrTtlTimer();
 
   if (list.length === 0) {
     container.innerHTML = '<div class="pdash-loading">No saved emails yet. Add one above.</div>';
@@ -2021,6 +2187,8 @@ function useSavedEmail(address) {
   startAutoRefresh();
   scheduleRender();
   refreshEmails();
+  startAddrTtlTimer();     // saved addresses never expire → countdown hides
+  _restoreClaimCta();      // no claim key for saved addresses → CTA hides
   showToast('✅ Now using ' + address);
   // Scroll to the absolute top so the user can see the email address and inbox
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2091,8 +2259,8 @@ function copyApiKey() {
   const el = document.getElementById('apikey-value');
   if (!el) return;
   navigator.clipboard.writeText(el.textContent)
-    .then(() => showToast('📋 API key copied!'))
-    .catch(() => showToast('❌ Copy failed'));
+    .then(() => showToast('📋 API key copied!', 'success'))
+    .catch(() => showToast('❌ Copy failed', 'error'));
 }
 
 /**
@@ -2505,10 +2673,8 @@ function renderProfileData(data) {
 
   const photoURL = serverPhotoURL || localStorage.getItem('photoURL');
   const avatarLetter = username ? username[0].toUpperCase() : '?';
-  const isGoogleOnly = Array.isArray(authProviders)
-    ? authProviders.includes('google') && !authProviders.includes('password')
-    : !!photoURL && !authProviders;
-  const isGoogleUser = Array.isArray(authProviders) && authProviders.includes('google');
+  // authProviders stays in the destructure for API compatibility;
+  // no provider-specific UI branches are rendered anymore.
 
   let remainingStr = 'N/A';
   let expiryStr = 'N/A';
@@ -2529,8 +2695,8 @@ function renderProfileData(data) {
   const planLabel = isPremium ? '⭐ Premium' : 'Free';
   const planClass = isPremium ? 'premium' : '';
 
-  // ── Verification nudge — shown when account has no verified email and no Google ──
-  const needsVerificationNudge = !isGoogleUser && (!hasEmail || !emailVerified);
+  // ── Verification nudge — shown when account has no verified recovery email ──
+  const needsVerificationNudge = !hasEmail || !emailVerified;
   const verificationBanner = needsVerificationNudge ? `
     <div class="profile-verify-banner" id="profile-verify-banner">
       <div class="pvb-icon">⚠️</div>
@@ -2541,10 +2707,6 @@ function renderProfileData(data) {
           : 'Your recovery email is unverified. Verify it now to secure account recovery.'
         }</div>
         <div class="pvb-actions">
-          ${!isGoogleUser ? `<button class="pvb-btn-google link-google-btn" onclick="linkGoogleAccount()">
-            <svg width="14" height="14" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg"><path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg>
-            Link Google (instant)
-          </button>` : ''}
           <button class="pvb-btn-email" onclick="_showAddEmailForm()">📧 ${hasEmail ? 'Verify Email' : 'Add Recovery Email'}</button>
         </div>
       </div>
@@ -2559,18 +2721,7 @@ function renderProfileData(data) {
     </div>` : '';
 
   // ── Password section ──
-  const passwordSection = isGoogleOnly
-    ? `<div class="profile-section">
-        <div class="profile-section-title">🔑 Set a Password</div>
-        <p style="font-size:13px;color:#888;margin-bottom:12px;">Your account was created with Google. Set a password to also sign in with your email address.</p>
-        <div class="profile-form" id="change-pw-form">
-          <input type="password" id="pw-new" class="profile-input" placeholder="New password (min 8 chars)" autocomplete="new-password">
-          <input type="password" id="pw-confirm" class="profile-input" placeholder="Confirm new password" autocomplete="new-password">
-          <p class="profile-form-error hidden" id="pw-error"></p>
-          <button class="profile-form-btn" onclick="setPasswordForGoogleUser()">Set Password</button>
-        </div>
-      </div>`
-    : `<div class="profile-section">
+  const passwordSection = `<div class="profile-section">
         <div class="profile-section-title">🔑 Change Password</div>
         <div class="profile-form" id="change-pw-form">
           <input type="password" id="pw-old" class="profile-input" placeholder="Current password" autocomplete="current-password">
@@ -2582,16 +2733,7 @@ function renderProfileData(data) {
       </div>`;
 
   // ── Delete account form ──
-  const deleteForm = isGoogleOnly
-    ? `<div class="profile-form hidden" id="delete-account-form">
-        <p style="font-size:13px;color:#888;margin-bottom:12px;">This will permanently delete your account and all associated data.</p>
-        <p class="profile-form-error hidden" id="del-error"></p>
-        <div class="confirm-actions" style="margin-top:10px;">
-          <button class="confirm-cancel-btn" onclick="hideDeleteAccountForm()">Cancel</button>
-          <button class="confirm-ok-btn danger" onclick="deleteAccount(true)">Delete My Account</button>
-        </div>
-      </div>`
-    : `<div class="profile-form hidden" id="delete-account-form">
+  const deleteForm = `<div class="profile-form hidden" id="delete-account-form">
         <input type="password" id="del-pw" class="profile-input" placeholder="Enter your password to confirm" autocomplete="current-password">
         <p class="profile-form-error hidden" id="del-error"></p>
         <div class="confirm-actions" style="margin-top:10px;">
@@ -2615,7 +2757,6 @@ function renderProfileData(data) {
       <div>
         <div class="profile-username">@${escapeHtml(username)}</div>
         <div class="profile-plan-badge ${planClass}">${planLabel}</div>
-        ${isGoogleUser ? `<div style="font-size:11px;color:#888;margin-top:4px;">Signed in with Google</div>` : ''}
       </div>
     </div>
 
@@ -2671,23 +2812,7 @@ function renderProfileData(data) {
       </div>
     </div>
 
-    ${!isGoogleUser ? `
-    <div class="profile-section" id="link-google-section">
-      <div class="profile-section-title">🔗 Linked Accounts</div>
-      <p style="font-size:13px;color:#888;margin-bottom:12px;">Link Google to enable one-tap sign-in and use it as a verified recovery method.</p>
-      <p class="profile-form-error hidden" id="profile-link-error"></p>
-      <button class="pvb-btn-google link-google-btn" onclick="linkGoogleAccount()" style="width:100%;justify-content:center;padding:10px 16px;font-size:14px;">
-        <svg width="16" height="16" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg"><path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg>
-        Link Google Account
-      </button>
-    </div>` : `
-    <div class="profile-section">
-      <div class="profile-section-title">🔗 Linked Accounts</div>
-      <div class="profile-email-status">
-        <span class="pes-icon">✅</span>
-        <span class="pes-text">Google account linked</span>
-      </div>
-    </div>`}
+    <p class="profile-form-error hidden" id="profile-link-error"></p>
 
     <div class="profile-actions">
       ${!isPremium ? `<button class="profile-action-btn" onclick="closeProfile();openPremium();">⭐ Upgrade to Premium</button>` : ''}
@@ -2906,7 +3031,7 @@ function hideDeleteAccountForm() {
   if (errEl) errEl.classList.add('hidden');
 }
 
-async function deleteAccount(isGoogleUser = false) {
+async function deleteAccount() {
   const errEl = document.getElementById('del-error');
   if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
 
@@ -2916,18 +3041,13 @@ async function deleteAccount(isGoogleUser = false) {
   const btn = document.querySelector('#delete-account-form .confirm-ok-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
 
-  let body;
-  if (isGoogleUser) {
-    body = JSON.stringify({ googleDelete: true });
-  } else {
-    const pw = document.getElementById('del-pw')?.value || '';
-    if (!pw) {
-      if (errEl) { errEl.textContent = 'Password is required.'; errEl.classList.remove('hidden'); }
-      if (btn) { btn.disabled = false; btn.textContent = 'Delete My Account'; }
-      return;
-    }
-    body = JSON.stringify({ password: pw });
+  const pw = document.getElementById('del-pw')?.value || '';
+  if (!pw) {
+    if (errEl) { errEl.textContent = 'Password is required.'; errEl.classList.remove('hidden'); }
+    if (btn) { btn.disabled = false; btn.textContent = 'Delete My Account'; }
+    return;
   }
+  const body = JSON.stringify({ password: pw });
 
   try {
     const res = await fetch('/api/user/profile', {
@@ -2954,52 +3074,6 @@ async function deleteAccount(isGoogleUser = false) {
   }
 }
 
-// Set a password for a Google-only account so they can also sign in by username/password
-async function setPasswordForGoogleUser() {
-  const newPw = document.getElementById('pw-new')?.value || '';
-  const confirmPw = document.getElementById('pw-confirm')?.value || '';
-  const errEl = document.getElementById('pw-error');
-  if (errEl) { errEl.classList.add('hidden'); errEl.textContent = ''; }
-
-  if (!newPw || !confirmPw) {
-    if (errEl) { errEl.textContent = 'All fields are required.'; errEl.classList.remove('hidden'); }
-    return;
-  }
-  if (newPw.length < 8) {
-    if (errEl) { errEl.textContent = 'Password must be at least 8 characters.'; errEl.classList.remove('hidden'); }
-    return;
-  }
-  if (newPw !== confirmPw) {
-    if (errEl) { errEl.textContent = 'Passwords do not match.'; errEl.classList.remove('hidden'); }
-    return;
-  }
-
-  const token = localStorage.getItem('authToken');
-  if (!token) return;
-
-  const btn = document.querySelector('#change-pw-form .profile-form-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Setting…'; }
-
-  try {
-    const res = await fetch('/api/user/profile', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ newPassword: newPw, isGoogleUser: true })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      if (errEl) { errEl.textContent = '✅ Password set! You can now sign in with your username.'; errEl.style.color = '#00d09c'; errEl.classList.remove('hidden'); }
-    } else {
-      if (errEl) { errEl.textContent = data.error || 'Failed to set password.'; errEl.classList.remove('hidden'); }
-    }
-  } catch (e) {
-    if (errEl) { errEl.textContent = 'Network error. Try again.'; errEl.classList.remove('hidden'); }
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Set Password'; }
-  }
-}
-
-
 async function saveCurrentEmail() {
   if (!currentEmail) { showToast('❌ No email to save'); return; }
   const token = localStorage.getItem('authToken');
@@ -3022,6 +3096,198 @@ async function saveCurrentEmail() {
     if (res.ok) { showToast('✅ Email saved to your account!'); loadSavedEmails(); }
     else showToast('❌ ' + (data.error || 'Could not save'));
   } catch (e) { showToast('❌ Network error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ADDRESS CLAIM — Ed25519 proof-of-possession
+// Keys are generated non-extractable and kept in IndexedDB.
+// Claim: sign "phantom-claim:{address}:{timestamp}" → POST /api/claim.
+// ═══════════════════════════════════════════════════════════════
+const _CLAIM_DB = 'phantom-claims';
+const _CLAIM_STORE = 'keys';
+
+function _claimDbOpen() {
+  return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined') { reject(new Error('IndexedDB unavailable')); return; }
+    const req = indexedDB.open(_CLAIM_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(_CLAIM_STORE)) {
+        db.createObjectStore(_CLAIM_STORE, { keyPath: 'addrHash' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function _claimDbPut(record) {
+  const db = await _claimDbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(_CLAIM_STORE, 'readwrite');
+    tx.objectStore(_CLAIM_STORE).put(record);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function _claimDbGet(addrHash) {
+  const db = await _claimDbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(_CLAIM_STORE, 'readonly');
+    const req = tx.objectStore(_CLAIM_STORE).get(addrHash);
+    req.onsuccess = () => { db.close(); resolve(req.result || null); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function _claimDbDelete(addrHash) {
+  const db = await _claimDbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(_CLAIM_STORE, 'readwrite');
+    tx.objectStore(_CLAIM_STORE).delete(addrHash);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+// Full (64-char) SHA-256 hex — used as the IndexedDB key for claim records
+async function _sha256Hex(str) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function _b64FromBuf(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function _setClaimCtaVisible(visible) {
+  const cta = document.getElementById('claim-cta');
+  if (cta) cta.classList.toggle('hidden', !visible);
+}
+
+// Called after a successful generateEmail while signed in.
+// Feature-detects Ed25519 via try/catch — unsupported browsers skip silently.
+async function _prepareClaimKeys(address) {
+  if (!address || !localStorage.getItem('authToken')) { _setClaimCtaVisible(false); return; }
+  try {
+    const keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+    const publicKeyRaw = await crypto.subtle.exportKey('raw', keyPair.publicKey);
+    const addrHash = await _sha256Hex(address);
+    await _claimDbPut({
+      addrHash,
+      privateKey: keyPair.privateKey,
+      publicKeyRaw,
+      address,
+      createdAt: Date.now()
+    });
+    _setClaimCtaVisible(true);
+  } catch (_) {
+    // Ed25519 not supported (or storage blocked) — no CTA, no error
+    _setClaimCtaVisible(false);
+  }
+}
+
+// On boot address-restore: show the CTA only if a claim key already exists
+async function _restoreClaimCta() {
+  try {
+    if (!currentEmail || !localStorage.getItem('authToken')) { _setClaimCtaVisible(false); return; }
+    const rec = await _claimDbGet(await _sha256Hex(currentEmail));
+    _setClaimCtaVisible(!!rec);
+  } catch (_) { _setClaimCtaVisible(false); }
+}
+
+async function claimCurrentAddress() {
+  const token = localStorage.getItem('authToken');
+  if (!token) { showToast('Sign in to claim this address', 'error'); openAuth(); return; }
+  if (!currentEmail) return;
+  try {
+    const addrHash = await _sha256Hex(currentEmail);
+    const rec = await _claimDbGet(addrHash);
+    if (!rec) { showToast('No claim key found for this address', 'error'); _setClaimCtaVisible(false); return; }
+
+    const challenge = 'phantom-claim:' + currentEmail.toLowerCase() + ':' + Date.now();
+    const sig = await crypto.subtle.sign('Ed25519', rec.privateKey, new TextEncoder().encode(challenge));
+
+    const res = await fetch('/api/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({
+        address: currentEmail,
+        publicKey: _b64FromBuf(rec.publicKeyRaw),
+        signature: _b64FromBuf(sig),
+        challenge
+      })
+    });
+    const data = await res.json();
+    if (res.ok && data.claimed) {
+      if (data.savedToAccount === false) {
+        showToast('Claimed, but your saved-address limit is full — upgrade to keep more', 'error');
+      } else {
+        showToast("Address claimed — it's yours now", 'success');
+      }
+      _setClaimCtaVisible(false);
+      _claimDbDelete(addrHash).catch(() => {});
+      loadSavedEmails();
+    } else {
+      showToast(data.error || 'Claim failed', 'error');
+    }
+  } catch (_) {
+    showToast('Claim failed — try again', 'error');
+  }
+}
+window.claimCurrentAddress = claimCurrentAddress;
+
+// ═══════════════════════════════════════════════════════════════
+// ADDRESS TTL COUNTDOWN (#addr-ttl)
+// Free temp addresses self-destruct 60 minutes after creation.
+// Hidden for saved (permanent) addresses.
+// ═══════════════════════════════════════════════════════════════
+let _addrTtlTimer = null;
+let _savedAddrSet = new Set();
+const _ADDR_TTL_MS = 60 * 60 * 1000;
+
+function _isSavedAddress(addr) {
+  return _savedAddrSet.has((addr || '').toLowerCase());
+}
+
+function stopAddrTtlTimer() {
+  if (_addrTtlTimer) { clearInterval(_addrTtlTimer); _addrTtlTimer = null; }
+  document.getElementById('addr-ttl')?.classList.add('hidden');
+}
+
+function startAddrTtlTimer() {
+  const el = document.getElementById('addr-ttl');
+  if (!el) return;
+  if (_addrTtlTimer) { clearInterval(_addrTtlTimer); _addrTtlTimer = null; }
+
+  const update = () => {
+    const created = parseInt(localStorage.getItem('emailCreatedAt') || '0', 10);
+    // Saved/permanent addresses never expire — no countdown
+    if (!created || !currentEmail || _isSavedAddress(currentEmail)) {
+      el.classList.add('hidden');
+      return;
+    }
+    const left = Math.max(0, _ADDR_TTL_MS - (Date.now() - created));
+    const pct = Math.max(0, Math.min(100, (left / _ADDR_TTL_MS) * 100));
+    const fill = el.querySelector('.ttl-fill');
+    const text = el.querySelector('.ttl-text');
+    if (fill) fill.style.width = pct + '%';
+    if (text) {
+      const mins = Math.ceil(left / 60000);
+      text.textContent = left > 0
+        ? `Self-destructs in ${mins}m — claim it to keep it.`
+        : 'Self-destructed — generate a new address.';
+    }
+    el.classList.remove('hidden');
+    if (left <= 0 && _addrTtlTimer) { clearInterval(_addrTtlTimer); _addrTtlTimer = null; }
+  };
+
+  update();
+  _addrTtlTimer = setInterval(update, 30000);
 }
 
 function showPremiumRequiredPrompt(message) {
@@ -3094,10 +3360,14 @@ async function addPermanentEmail() {
 
 // ===== Email Forwarding (Premium) =====
 async function loadForwardingSettings() {
-  const token = localStorage.getItem('authToken');
-  if (!token) return;
   const container = document.getElementById('forwarding-list');
   if (!container) return;
+  const token = localStorage.getItem('authToken');
+  const isPremium = localStorage.getItem('isPremium') === 'true';
+  if (!token || !isPremium) {
+    container.innerHTML = _lockedOverlayHtml('Auto-forwarding');
+    return;
+  }
   container.innerHTML = '<div class="pdash-loading">Loading…</div>';
   try {
     const res = await fetch('/api/user/saved-emails', {
@@ -3242,8 +3512,6 @@ function _closeTopmostModal() {
   if (profile && profile.classList.contains('show')) { closeProfile(); return; }
   const about = document.getElementById('about-modal');
   if (about && about.classList.contains('show')) { closeAbout(); return; }
-  const qr = document.getElementById('qr-modal');
-  if (qr && qr.classList.contains('show')) { closeQR(); return; }
   const compose = document.getElementById('compose-modal');
   if (compose && compose.classList.contains('show')) { closeCompose(); return; }
 }
@@ -3283,7 +3551,6 @@ window.addEventListener('resize', () => {
 
 document.getElementById('email-modal')?.addEventListener('click', e => { if (e.target.id === 'email-modal') closeModal(); });
 document.getElementById('about-modal')?.addEventListener('click', e => { if (e.target.id === 'about-modal') closeAbout(); });
-document.getElementById('qr-modal')?.addEventListener('click', e => { if (e.target.id === 'qr-modal') closeQR(); });
 document.getElementById('auth-modal')?.addEventListener('click', e => { if (e.target.id === 'auth-modal') closeAuth(); });
 document.getElementById('profile-modal')?.addEventListener('click', e => { if (e.target.id === 'profile-modal') closeProfile(); });
 
@@ -3303,6 +3570,7 @@ function openCompose() {
   if (win.classList.contains('show') && win.classList.contains('minimized')) {
     win.classList.remove('minimized');
     composeMinimized = false;
+    document.body.classList.add('compose-open');
     setTimeout(() => document.getElementById('compose-to').focus(), 80);
     return;
   }
@@ -3342,6 +3610,7 @@ function openCompose() {
   // Force display via inline style so it always works regardless of CSS cascade
   win.style.display = 'flex';
   win.classList.add('show');
+  document.body.classList.add('compose-open');
   const fab = document.getElementById('compose-fab');
   if (fab) fab.classList.add('compose-fab--hidden');
   _pushModalHistory();
@@ -3433,6 +3702,7 @@ function closeCompose() {
   win.classList.remove('show', 'minimized', 'fullscreen', 'dragging');
   win.style.removeProperty('left');
   win.style.removeProperty('top');
+  document.body.classList.remove('compose-open');
   composeMinimized = false;
   _composeFullscreen = false;
   _composeDragActive = false;
@@ -3615,6 +3885,7 @@ function _initComposeMobileDrag() {
     if (newH > MIN_H + 40 && win.classList.contains('minimized')) {
       win.classList.remove('minimized');
       composeMinimized = false;
+      document.body.classList.add('compose-open');
     }
   }, { passive: false });
 
@@ -3627,6 +3898,7 @@ function _initComposeMobileDrag() {
     } else if (dy > 60 && win.classList.contains('minimized')) {
       win.classList.remove('minimized');
       composeMinimized = false;
+      document.body.classList.add('compose-open');
     }
   });
 }
@@ -3813,6 +4085,8 @@ function toggleComposeMinimize() {
   if (!win) return;
   composeMinimized = !composeMinimized;
   win.classList.toggle('minimized', composeMinimized);
+  // Bottom nav reappears while compose is minimized
+  document.body.classList.toggle('compose-open', !composeMinimized);
   // Reset any inline height set by mobile drag
   if (!composeMinimized) {
     win.style.removeProperty('height');
@@ -3831,6 +4105,7 @@ function expandComposeFullscreen() {
   win.classList.toggle('fullscreen', _composeFullscreen);
   win.classList.remove('minimized');
   composeMinimized = false;
+  document.body.classList.add('compose-open');
 
   // When leaving fullscreen, re-apply the smart initial position so the window
   // lands back at the calculated sweet-spot rather than snapping to CSS defaults.
@@ -3905,7 +4180,9 @@ async function sendComposedEmail() {
         errEl.classList.remove('hidden');
         return;
       }
-      from = `${customUsername}@unkn0wn.qzz.io`;
+      // Use the domain of the selected From address (falls back to the permanent domain)
+      const fromDomain = from.includes('@') ? from.split('@')[1] : PERM_EMAIL_DOMAIN.slice(1);
+      from = `${customUsername}@${fromDomain}`;
     }
   }
 
@@ -3978,7 +4255,7 @@ async function sendComposedEmail() {
     const data = await res.json();
 
     if (res.ok) {
-      showToast('📤 Email sent!');
+      showToast('📤 Email sent!', 'success');
       localStorage.removeItem(_DRAFT_KEY); // discard draft on successful send
       composeAttachments = [];
       renderComposeAttachments();
@@ -4001,7 +4278,8 @@ async function sendComposedEmail() {
 async function loadSentEmails() {
   const wrapper = document.getElementById('sent-box-wrapper');
   const badge = document.getElementById('sent-count-badge');
-  if (wrapper) wrapper.classList.remove('hidden');
+  // Visibility is owned by the Inbox/Sent tabs — only show while the Sent tab is active
+  if (wrapper) wrapper.classList.toggle('hidden', _mainTab !== 'sent');
 
   try {
     const token = localStorage.getItem('authToken');
@@ -4216,16 +4494,15 @@ function viewSentEmail(index) {
   // ── Open history rows ──
   let historyHtml = '';
   if (s.openHistory && s.openHistory.length > 0) {
+    // Privacy: device + country only — no IP is ever rendered
     const rows = s.openHistory.slice(0, 30).map((h, idx) => {
       const ua = _parseUserAgent(h.agent || '');
-      const fullIp = h.ip && h.ip !== 'unknown' ? h.ip : '—';
       return `<div class="open-history-item">
         <div class="ohi-index">#${idx + 1}</div>
         <div class="ohi-details">
           <div class="ohi-time">${formatDate(h.at)}</div>
           <div class="ohi-meta">
             ${h.country ? `<span class="ohi-flag">📍 ${escapeHtml(h.country)}</span>` : ''}
-            <span class="ohi-ip" title="${escapeHtml(h.ip || '')}">🌐 ${escapeHtml(fullIp)}</span>
             <span class="ohi-ua">💻 ${escapeHtml(ua)}</span>
             ${h.agent ? `<span class="ohi-ua" title="${escapeHtml(h.agent)}" style="color:#444;font-size:10px;cursor:help;">ⓘ UA</span>` : ''}
           </div>
@@ -4283,6 +4560,7 @@ function viewSentEmail(index) {
   document.getElementById('modal-attachments').classList.add('hidden');
   _pushModalHistory();
   document.getElementById('email-modal').classList.add('show');
+  document.body.classList.add('reader-open');
   document.body.style.overflow = 'hidden';
 }
 
@@ -4352,25 +4630,14 @@ function _parseUserAgent(ua) {
   return first.length > 30 ? first.slice(0, 28) + '…' : first;
 }
 
-// Mask IP for privacy — show first 2 octets only
-function _maskIp(ip) {
-  if (!ip || ip === 'unknown') return '—';
-  if (ip.includes(':')) {
-    const segs = ip.split(':');
-    return segs.slice(0, 2).join(':') + ':…';
-  }
-  const parts = ip.split('.');
-  if (parts.length === 4) return `${parts[0]}.${parts[1]}.*.*`;
-  return ip;
-}
-
 // ═══════════════════════════════════════════════════════════════
 // PUSHER REAL-TIME (private channels + ETag polling fallback)
 // ═══════════════════════════════════════════════════════════════
 
 async function _sha256Short(str) {
+  // 32-char suffix — MUST match the backend channel naming (functions/api/pusher/auth.js)
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
 }
 
 async function _initPusher() {
@@ -4408,7 +4675,16 @@ async function _initPusher() {
     // Subscribe to system channel (announcements)
     try {
       _pusherSystem = _pusher.subscribe('private-system');
-      _pusherSystem.bind('announcement', data => _showAnnouncementBanner(data.text || data));
+      _pusherSystem.bind('announcement', data => {
+        // {clear:true} → remove any visible banner
+        if (data && data.clear) {
+          document.getElementById('announcement-banner')?.remove();
+          return;
+        }
+        // Accept {text} or {message} payload shapes (or a bare string)
+        const text = (data && (data.text || data.message)) || (typeof data === 'string' ? data : '');
+        if (text) _showAnnouncementBanner(text);
+      });
     } catch (_) {}
 
     // Subscribe to user-level channel (payment_confirmed, plan_changed, etc)
@@ -4491,18 +4767,6 @@ function _showAnnouncementBanner(text) {
   setTimeout(() => banner.remove?.(), 30000);
 }
 
-// ── Google Login stub (Google OAuth removed — show auth modal instead) ──
-function googleLogin() {
-  showToast('🔐 Please use username + password to sign in.');
-  const authModal = document.getElementById('auth-modal');
-  if (authModal && !authModal.classList.contains('show')) openAuth();
-}
-
-// ── Google Link stub (Google OAuth removed) ──────────────────
-function linkGoogleAccount() {
-  showToast('Google linking has been removed. Use username + password.');
-}
-
 // ── Payment Status Check ─────────────────────────────────────
 // Check the live status of a NOWPayments payment from the frontend.
 async function checkPaymentStatus(paymentId) {
@@ -4553,4 +4817,51 @@ async function regenerateApiKey() {
       showToast('❌ ' + (data.error || 'Failed'));
     }
   } catch (_) { showToast('❌ Network error'); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PWA — service worker, install prompt, launcher shortcuts
+// ═══════════════════════════════════════════════════════════════
+let _deferredInstallPrompt = null;
+
+// Service worker registration (feature-detected, after page load)
+if ('serviceWorker' in navigator) {
+  const _registerSW = () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); };
+  if (document.readyState === 'complete') _registerSW();
+  else window.addEventListener('load', _registerSW);
+}
+
+// Install prompt → #install-app-btn
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _deferredInstallPrompt = e;
+  document.getElementById('install-app-btn')?.classList.remove('hidden');
+});
+
+window.addEventListener('appinstalled', () => {
+  _deferredInstallPrompt = null;
+  document.getElementById('install-app-btn')?.classList.add('hidden');
+});
+
+document.getElementById('install-app-btn')?.addEventListener('click', async () => {
+  if (!_deferredInstallPrompt) return;
+  _deferredInstallPrompt.prompt();
+  try { await _deferredInstallPrompt.userChoice; } catch (_) {}
+  _deferredInstallPrompt = null;
+  document.getElementById('install-app-btn')?.classList.add('hidden');
+});
+
+// Manifest launcher shortcuts: /?action=generate|inbox|compose
+function handlePWAShortcuts() {
+  const action = new URLSearchParams(window.location.search).get('action');
+  if (!action) return;
+  if (action === 'generate') {
+    generateEmail();
+  } else if (action === 'inbox') {
+    switchMainTab('inbox');
+    document.getElementById('inbox-body')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (action === 'compose') {
+    setTimeout(openCompose, 300);
+  }
+  history.replaceState({}, '', window.location.pathname);
 }

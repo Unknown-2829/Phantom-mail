@@ -9,6 +9,7 @@ const SAVED_TTL_SEC    = 1296000;    // 15 days
 const MAX_ATT_BYTES    = 10 * 1024 * 1024; // 10 MB per attachment
 const FREE_RATE_LIMIT  = 50;         // emails/hr (free)
 const PREM_RATE_LIMIT  = 1000;       // emails/hr (premium)
+const FWD_RATE_LIMIT   = 10;         // forwards/hr per address (silent skip past limit)
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────────
 
@@ -73,6 +74,76 @@ async function trackEvent(env, metric) {
         await env.INBOX_META.put(key, String(cur + 1), { expirationTtl: 400 * 86400 });
     } catch (e) {
         console.error('[Analytics] trackEvent failed:', e.message);
+    }
+}
+
+/** Execute forwarding for an inbound email if a forward:{address} rule exists.
+ *  Rules are written by /api/user/forwarding into the EMAILS KV.
+ *  Fire-and-forget: every failure/skip path is silent — forwarding must never
+ *  affect mail storage. Attachments are never forwarded (noted in footer). */
+async function forwardEmail(env, recipient, addressHash, sender, parsed, hasAttachments) {
+    try {
+        if (!env.RESEND_API_KEY) return;
+
+        // Loop guard 1: never forward mail sent from our own domains
+        const fromAddr = (sender || '').toLowerCase().trim();
+        if (fromAddr.endsWith('@unkn0wn.qzz.io') || fromAddr.endsWith('@phant0m.qzz.io')) return;
+
+        // Loop guard 2: never re-forward an already-forwarded email
+        const alreadyForwarded = (parsed.headers || []).some(
+            h => h.key?.toLowerCase() === 'x-phantom-forwarded'
+        );
+        if (alreadyForwarded) return;
+
+        // Forwarding rule configured for this address?
+        const rule = await env.EMAILS.get(`forward:${recipient}`, { type: 'json' });
+        if (!rule?.to) return;
+
+        // Per-address forward rate limit (silent skip)
+        const hourBucket = Math.floor(Date.now() / 3600000);
+        const fwdRateKey = `fwd_rate:${addressHash}:${hourBucket}`;
+        const fwdCount   = parseInt(await env.INBOX_META.get(fwdRateKey) || '0', 10);
+        if (fwdCount >= FWD_RATE_LIMIT) return;
+
+        // Global Resend quota guard — API sends + forwards share the daily budget
+        const day        = new Date().toISOString().slice(0, 10);
+        const quotaLimit = parseInt(env.RESEND_QUOTA_LIMIT || '3000', 10);
+        const sentToday  = parseInt(await env.INBOX_META.get(`analytics:emails_sent:${day}`) || '0', 10);
+        const fwdToday   = parseInt(await env.INBOX_META.get(`analytics:emails_forwarded:${day}`) || '0', 10);
+        if (sentToday + fwdToday >= quotaLimit) return;
+
+        // Build outbound payload — original body + footer, no attachment forwarding
+        let footer = `Forwarded by Phantom Mail from ${recipient}`;
+        if (hasAttachments) footer += ' — Attachments available in your Phantom Mail inbox';
+
+        const payload = {
+            from:    'Phantom Mail Forwarder <noreply@unkn0wn.qzz.io>',
+            to:      [rule.to],
+            subject: `[Fwd] ${parsed.subject || '(No Subject)'}`,
+            headers: { 'X-Phantom-Forwarded': '1' }
+        };
+        if (parsed.html) {
+            payload.html = `${parsed.html}<hr><p style="color:#888;font-size:12px;">${footer}</p>`;
+        } else {
+            payload.text = `${parsed.text || ''}\n\n---\n${footer}`;
+        }
+
+        const res = await fetch('https://api.resend.com/emails', {
+            method:  'POST',
+            headers: { 'Authorization': `Bearer ${env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+            body:    JSON.stringify(payload)
+        });
+        if (!res.ok) {
+            console.error('[Forward] Resend error:', res.status, await res.text().catch(() => ''));
+            return;
+        }
+
+        // Count only successful forwards (rate limit + daily analytics)
+        await env.INBOX_META.put(fwdRateKey, String(fwdCount + 1), { expirationTtl: 7200 });
+        await env.INBOX_META.put(`analytics:emails_forwarded:${day}`, String(fwdToday + 1), { expirationTtl: 400 * 86400 });
+        console.log(`[Forward] ${recipient} → ${rule.to}`);
+    } catch (e) {
+        console.error('[Forward] failed:', e.message);
     }
 }
 
@@ -301,6 +372,9 @@ export default {
 
         // 9. Analytics
         ctx.waitUntil(trackEvent(env, 'emails_received'));
+
+        // 10. Forwarding (if configured) — isolated so failures never affect storage
+        ctx.waitUntil(forwardEmail(env, recipient, addressHash, message.from, parsed, attachmentsMeta.length > 0));
 
         console.log(`[Email] Stored ${emailId} for ${recipient} (ttl=${ttl}s, premium=${isPremium}, saved=${isSaved})`);
     },

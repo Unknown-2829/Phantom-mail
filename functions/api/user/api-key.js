@@ -81,6 +81,16 @@ async function handleGet(user, env, isPremium, username) {
     let keyMeta = null;
     if (env.API_KEYS) {
         keyMeta = await env.API_KEYS.get(apiKey, { type: 'json' }).catch(() => null);
+        // Self-heal: user.apiKey is set but the credential is missing from API_KEYS
+        // (e.g. an interrupted rotation). Re-register it so the user isn't locked out.
+        if (!keyMeta) {
+            keyMeta = {
+                key: apiKey, userId: username,
+                plan: isPremium ? 'pro' : 'free',
+                createdAt: user.apiKeyCreatedAt || Date.now(), usedToday: 0, lastUsed: null
+            };
+            await env.API_KEYS.put(apiKey, JSON.stringify(keyMeta)).catch(() => {});
+        }
         // Sync plan in API_KEYS if drift
         if (keyMeta && keyMeta.plan !== (isPremium ? 'pro' : 'free')) {
             keyMeta.plan = isPremium ? 'pro' : 'free';
@@ -104,8 +114,23 @@ async function handlePost(user, env, username, isPremium) {
     const newKey = generateApiKey(plan);
     const oldKey = user.apiKey;
 
+    // ── Rotation order: credential must always be resolvable ───────────────────
+    // 1) Register the NEW key FIRST — so no window exists where the user's key is
+    //    missing from API_KEYS. 2) Then point user.apiKey at it. 3) Only then move
+    //    the OLD key to its 24h grace record.
+    if (env.API_KEYS) {
+        await env.API_KEYS.put(newKey, JSON.stringify({
+            key: newKey, userId: username, plan,
+            createdAt: Date.now(), usedToday: 0, lastUsed: null
+        }));
+    }
+
+    user.apiKey = newKey;
+    user.apiKeyCreatedAt = Date.now();
+    await env.EMAILS.put(username, JSON.stringify(user));
+
     // 24-hour grace period for the old key — keeps in-flight API calls working
-    if (oldKey && env.API_KEYS) {
+    if (oldKey && oldKey !== newKey && env.API_KEYS) {
         const oldMeta = await env.API_KEYS.get(oldKey, { type: 'json' }).catch(() => null);
         if (oldMeta) {
             await env.API_KEYS.put(`apikey:grace:${oldKey}`, JSON.stringify({
@@ -115,19 +140,8 @@ async function handlePost(user, env, username, isPremium) {
                 replacedBy: newKey
             }), { expirationTtl: 86400 }); // 24hr TTL
         }
-        // Delete the primary slot immediately
+        // Delete the primary slot now that the new key is live and user points at it
         await env.API_KEYS.delete(oldKey).catch(() => {});
-    }
-
-    user.apiKey = newKey;
-    user.apiKeyCreatedAt = Date.now();
-    await env.EMAILS.put(username, JSON.stringify(user));
-
-    if (env.API_KEYS) {
-        await env.API_KEYS.put(newKey, JSON.stringify({
-            key: newKey, userId: username, plan,
-            createdAt: Date.now(), usedToday: 0, lastUsed: null
-        }));
     }
 
     return json({

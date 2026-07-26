@@ -29,11 +29,33 @@ export async function onRequestPost(context) {
         const timestamp = request.headers.get('svix-timestamp');
         const msgId     = request.headers.get('svix-id');
 
-        // Verify webhook signature if secret is configured
-        if (env.RESEND_WEBHOOK_SECRET && signature) {
+        // ── Signature verification ─────────────────────────────────────────────
+        // When a secret is configured we REQUIRE the signature + timestamp headers.
+        // Skipping verification on a missing header makes the endpoint forgeable.
+        if (env.RESEND_WEBHOOK_SECRET) {
+            if (!signature || !timestamp || !msgId) {
+                console.error('[webhook/resend] missing svix signature/timestamp/id headers');
+                return new Response('Forbidden', { status: 403 });
+            }
+            // Replay protection: reject timestamps outside a ±5 minute window
+            const tsSec = parseInt(timestamp, 10);
+            if (!tsSec || Math.abs(Date.now() / 1000 - tsSec) > 300) {
+                console.error('[webhook/resend] timestamp outside ±5min freshness window');
+                return new Response('Forbidden', { status: 403 });
+            }
             const isValid = await verifySignature(env.RESEND_WEBHOOK_SECRET, msgId, timestamp, rawBody, signature);
             if (!isValid) {
                 return new Response('Forbidden', { status: 403 });
+            }
+        }
+
+        // ── Idempotency ────────────────────────────────────────────────────────
+        // Svix delivers at-least-once; short-circuit duplicates by svix-id.
+        if (msgId && env.INBOX_META) {
+            const seen = await env.INBOX_META.get(`webhookseen:${msgId}`).catch(() => null);
+            if (seen) {
+                console.log(`[webhook/resend] duplicate delivery svix-id=${msgId} — skipping`);
+                return new Response('OK', { status: 200 });
             }
         }
 
@@ -178,6 +200,11 @@ export async function onRequestPost(context) {
             await env.INBOX_META.put(analyticsKey, String(cur + 1), { expirationTtl: 400 * 86400 });
         }
 
+        // Mark this delivery as processed (idempotency) — 7-day retention
+        if (msgId && env.INBOX_META) {
+            await env.INBOX_META.put(`webhookseen:${msgId}`, '1', { expirationTtl: 7 * 86400 }).catch(() => {});
+        }
+
         return new Response('OK', { status: 200 });
 
     } catch (err) {
@@ -210,7 +237,8 @@ async function updateSentRecord(env, emailId, trackingId, updates) {
     if (!record) return;
 
     Object.assign(record, updates);
-    await env.EMAILS.put(sentKey, JSON.stringify(record)).catch(() => {});
+    // Preserve the 15-day TTL — a plain put() would strip it and make the record permanent
+    await env.EMAILS.put(sentKey, JSON.stringify(record), { expirationTtl: 15 * 24 * 3600 }).catch(() => {});
 }
 
 async function incrementTrackingCounter(env, emailId, trackingId, field, extraFields, rawIp = null) {
@@ -262,7 +290,8 @@ async function incrementTrackingCounter(env, emailId, trackingId, field, extraFi
     // Never persist raw IP — remove any raw IP fields before saving
     delete record.lastOpenIp;
     delete record.lastClickIp;
-    await env.EMAILS.put(sentKey, JSON.stringify(record)).catch(() => {});
+    // Preserve the 15-day TTL — a plain put() would strip it and make the record permanent
+    await env.EMAILS.put(sentKey, JSON.stringify(record), { expirationTtl: 15 * 24 * 3600 }).catch(() => {});
 }
 
 /** Returns a simple device type string from a User-Agent header */
@@ -280,20 +309,54 @@ function parseDevice(ua) {
 
 async function verifySignature(secret, msgId, timestamp, body, signatureHeader) {
     try {
-        // Svix signature format: v1,<base64sig> (may be comma-separated list)
+        // Svix signature format: v1,<base64sig> (may be a space-separated list).
+        // The signed content is `${msgId}.${timestamp}.${body}`.
         const toSign = `${msgId}.${timestamp}.${body}`;
-        const key    = await crypto.subtle.importKey(
-            'raw', new TextEncoder().encode(secret),
-            { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-        );
-        const sigBuf   = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(toSign));
-        const computed = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
 
-        return signatureHeader.split(' ').some(part => {
-            const sig = part.split(',')[1];
-            return sig && constantTimeEqual(sig, computed);
-        });
+        // Resend/Svix secrets are 'whsec_' + base64. The correct HMAC key is the
+        // base64-DECODED raw bytes of that suffix — NOT the raw string.
+        const rawSecret = secret.startsWith('whsec_') ? secret.slice(6) : secret;
+        let keyBytes;
+        try {
+            const bin = atob(rawSecret);
+            keyBytes  = Uint8Array.from(bin, c => c.charCodeAt(0));
+        } catch {
+            keyBytes = null; // not valid base64 — will rely on raw-string fallback
+        }
+
+        // Extract the candidate signatures from the (possibly multi-part) header
+        const candidates = signatureHeader.split(' ')
+            .map(part => part.split(',')[1])
+            .filter(Boolean);
+
+        // Primary path: base64-decoded secret bytes (the correct Svix scheme)
+        if (keyBytes) {
+            const decodedComputed = await hmacB64(keyBytes, toSign);
+            if (candidates.some(sig => constantTimeEqual(sig, decodedComputed))) {
+                console.log('[webhook/resend] signature matched (base64-decoded secret)');
+                return true;
+            }
+        }
+
+        // Fallback: raw-string HMAC (legacy behaviour) — kept so genuine webhooks
+        // still validate if the secret is not in the expected whsec_+base64 form.
+        const rawComputed = await hmacB64(new TextEncoder().encode(secret), toSign);
+        if (candidates.some(sig => constantTimeEqual(sig, rawComputed))) {
+            console.warn('[webhook/resend] signature matched (raw-string secret fallback)');
+            return true;
+        }
+
+        return false;
     } catch { return false; }
+}
+
+async function hmacB64(keyBytes, msg) {
+    const key = await crypto.subtle.importKey(
+        'raw', keyBytes,
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    );
+    const sigBuf = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+    return btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
 }
 
 function constantTimeEqual(a, b) {

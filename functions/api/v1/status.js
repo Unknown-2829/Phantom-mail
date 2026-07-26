@@ -39,10 +39,13 @@ export async function onRequestGet(context) {
     const isPro   = plan === 'pro';
     const today   = new Date().toISOString().slice(0, 10);
 
-    // Fetch today's usage counters
+    // Fetch today's usage counters — keys MUST match what the endpoints write:
+    //   generate.js → api_usage:gen:{key}:{day}
+    //   emails.js   → api_usage:read:{key}:{day}
+    //   send.js     → api_usage:v1send:{key}:{day}
     const [genUsed, receiveUsed, sendUsed] = await Promise.all([
-        env.INBOX_META?.get(`api_usage:v1gen:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0),
-        env.INBOX_META?.get(`api_usage:v1recv:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0),
+        env.INBOX_META?.get(`api_usage:gen:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0),
+        env.INBOX_META?.get(`api_usage:read:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0),
         env.INBOX_META?.get(`api_usage:v1send:${apiKey}:${today}`).then(v => parseInt(v || '0', 10)).catch(() => 0)
     ]);
 
@@ -56,14 +59,14 @@ export async function onRequestGet(context) {
         quotas: {
             generate: {
                 used:  genUsed,
-                limit: isPro ? 500 : 10,
-                remaining: Math.max(0, (isPro ? 500 : 10) - genUsed),
+                limit: isPro ? 200 : 10,
+                remaining: Math.max(0, (isPro ? 200 : 10) - genUsed),
                 resetsAt: `${today}T23:59:59Z`
             },
             receive: {
                 used:  receiveUsed,
-                limit: isPro ? 500 : 10,
-                remaining: Math.max(0, (isPro ? 500 : 10) - receiveUsed),
+                limit: isPro ? 500 : 50,
+                remaining: Math.max(0, (isPro ? 500 : 50) - receiveUsed),
                 resetsAt: `${today}T23:59:59Z`
             },
             send: {

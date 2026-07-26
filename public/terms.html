@@ -161,7 +161,7 @@
 
   <div class="container">
     <h1>Terms of Service</h1>
-    <p class="last-updated">Last Updated: March 18, 2026</p>
+    <p class="last-updated">Last Updated: July 26, 2026</p>
 
     <p>Welcome to Phantom Mail! These terms explain how our service works and what we expect from each other. We've written them to be clear and fair.</p>
 
@@ -169,11 +169,12 @@
     <p>By using Phantom Mail (the "Service"), you agree to these Terms of Service and our Privacy Policy. If these terms don't work for you, please don't use the Service.</p>
 
     <h2>2. Description of Service</h2>
-    <p>Phantom Mail provides temporary and permanent disposable email addresses for receiving emails. The Service includes:</p>
+    <p>Phantom Mail provides disposable email addresses on the <code>@unkn0wn.qzz.io</code> and <code>@phant0m.qzz.io</code> domains for receiving — and, with an account, sending — email. The Service includes:</p>
     <ul>
-      <li><strong>Free Plan:</strong> Temporary email addresses that expire after 1 hour</li>
-      <li><strong>Premium Plan:</strong> Permanent addresses, 30-day email retention, custom usernames, email forwarding, and API access</li>
+      <li><strong>Free Plan:</strong> Addresses that self-destruct 1 hour after generation, holding up to 10 emails; 1 saved address; 3 UI sends/day. API keys can receive only (10 emails/day) — API sending is blocked.</li>
+      <li><strong>Premium Plan ($5/month or $40/year):</strong> 15-day retention (up to 45 emails/address), 15 saved addresses, custom handle + domain choice, email forwarding, 25 UI sends/day, and Developer API access (500 receive + 50 send per day).</li>
     </ul>
+    <p><strong>Sending requires an account.</strong> Anonymous sending is disabled — you must be signed in to send mail, and API sending requires a Premium API key.</p>
 
     <h2>3. User Responsibilities</h2>
     <p>You're in control of how you use our service. We ask that you use it responsibly and legally.</p>
@@ -200,7 +201,7 @@
       <li>You can create an account to access Premium features</li>
       <li>Choose a username and strong password</li>
       <li>Keep your login credentials secure - you're responsible for your account</li>
-      <li><strong>No Password Recovery:</strong> We can't recover lost passwords, so keep yours safe</li>
+      <li><strong>Password Recovery:</strong> If you added a recovery email, you can reset your password with a one-time code sent to it. Without a recovery email, a lost password cannot be recovered, so keep yours safe.</li>
     </ul>
 
     <h3>4.2 Account Security</h3>
@@ -221,10 +222,10 @@
 
     <h2>6. Email Retention and Deletion</h2>
     <ul>
-      <li><strong>Free Users:</strong> Emails are automatically deleted after 1 hour</li>
-      <li><strong>Premium Users:</strong> Emails are retained for 30 days, then automatically deleted</li>
-      <li><strong>Permanent Addresses:</strong> Custom addresses remain active as long as your Premium subscription is valid</li>
-      <li><strong>No Data Recovery:</strong> Once emails are deleted (manually or automatically), they cannot be recovered</li>
+      <li><strong>Free Users:</strong> Addresses self-destruct 1 hour after generation and hold up to 10 emails; the oldest email is dropped once the address exceeds 10.</li>
+      <li><strong>Premium Users:</strong> Emails are retained for 15 days, then automatically deleted; up to 45 per address (30 inbox + 15 starred).</li>
+      <li><strong>Address Ownership:</strong> A fresh, human-looking username is generated each time and no address history is stored. A previously generated address can only be re-claimed using the Ed25519 key you held at generation.</li>
+      <li><strong>No Data Recovery:</strong> Once emails are deleted (manually or automatically), they cannot be recovered.</li>
     </ul>
 
     <h2>7. User Responsibility and Liability</h2>
@@ -241,10 +242,10 @@
 
     <h3>8.1 Payment Terms</h3>
     <ul>
-      <li>Premium subscriptions are paid via cryptocurrency</li>
-      <li>Payment is manually verified by the admin</li>
-      <li>Premium access is activated after payment confirmation</li>
-      <li>Subscriptions are non-refundable except as required by law</li>
+      <li>Premium subscriptions cost <strong>$5/month</strong> or <strong>$40/year</strong> and are paid in cryptocurrency via <strong>NOWPayments</strong>.</li>
+      <li>Premium access is activated once your payment confirms on-chain.</li>
+      <li>Cryptocurrency amounts are quoted in USD and settled at the network rate at time of payment; on-chain transactions are final and cannot be reversed by us.</li>
+      <li><strong>No refunds after activation.</strong> Because Premium is delivered immediately once payment confirms, all sales are final and non-refundable after your subscription is activated, except where a refund is strictly required by applicable law.</li>
     </ul>
 
     <h3>8.2 Cancellation</h3>
@@ -257,10 +258,11 @@
     <h2>9. Developer API</h2>
     <p>If you use our Developer API, you agree to:</p>
     <ul>
-      <li>Respect rate limits: 100 requests/day (free) or 10,000 requests/day (Premium)</li>
-      <li>Not abuse or overload the API</li>
-      <li>Keep your API key secure and confidential</li>
-      <li>Not use the API for prohibited activities listed in Section 3</li>
+      <li>Respect your key's daily limits: Free keys can <strong>receive only</strong> (10 emails/day) and <strong>cannot send</strong>; Premium keys allow 500 receive + 50 send per day.</li>
+      <li>Respect our fair-use and abuse-protection thresholds, which apply in addition to the published quotas.</li>
+      <li>Not abuse, scrape, flood, or overload the API.</li>
+      <li>Keep your API key secure and confidential.</li>
+      <li>Not use the API for prohibited activities listed in Section 3.</li>
     </ul>
 
     <h2>10. Intellectual Property</h2>
@@ -293,7 +295,7 @@
     </ul>
 
     <h2>13. Third-Party Services</h2>
-    <p>We use Cloudflare infrastructure for hosting and email routing. While we trust them, we can't control everything they do.</p>
+    <p>We rely on a small set of providers to operate the Service: <strong>Cloudflare</strong> (hosting, Workers, KV/R2 storage, and email routing), <strong>Pusher</strong> (real-time inbox push), <strong>Resend</strong> (outbound and transactional email delivery), and <strong>NOWPayments</strong> (crypto payment processing). While we trust these providers, we can't control everything they do, and their own terms and policies also apply.</p>
 
     <h2>14. Changes to Terms</h2>
     <p>We reserve the right to modify these Terms of Service at any time. Changes will be posted on this page with an updated "Last Updated" date. Your continued use of the Service after changes constitutes acceptance of the updated terms.</p>
@@ -307,7 +309,7 @@
     <h2>17. Contact Us</h2>
     <p>If you have questions about these Terms of Service, contact us:</p>
     <ul>
-      <li><strong>Telegram:</strong> <a href="https://t.me/unknownlll2829" target="_blank" rel="noopener">@unknownlll2829</a></li>
+      <li><strong>Support Email:</strong> <a href="mailto:support@unkn0wn.qzz.io">support@unkn0wn.qzz.io</a></li>
       <li><strong>Website:</strong> <a href="https://mail.unknowns.app">mail.unknowns.app</a></li>
     </ul>
 

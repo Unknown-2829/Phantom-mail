@@ -23,7 +23,7 @@
     "name": "Privacy Policy - Phantom Mail",
     "description": "Privacy Policy for Phantom Mail disposable email service. Explains data collection, usage, retention, third parties, security, and user rights.",
     "url": "https://mail.unknowns.app/privacy-policy.html",
-    "dateModified": "2026-03-18",
+    "dateModified": "2026-07-26",
     "inLanguage": "en",
     "publisher": {
       "@type": "Organization",
@@ -34,8 +34,8 @@
       "@type": "PrivacyPolicy",
       "name": "Phantom Mail Privacy Policy",
       "datePublished": "2026-03-18",
-      "dateModified": "2026-03-18",
-      "text": "Phantom Mail collects minimal data solely for service delivery. We do not track users, share data with third parties, or monitor email content. Free emails are deleted after 1 hour; Premium after 30 days. Passwords are hashed and never readable. Users may delete their account and all data at any time.",
+      "dateModified": "2026-07-26",
+      "text": "Phantom Mail collects minimal data solely for service delivery. We do not track users, share data with third parties, or monitor email content. Free addresses self-destruct after 1 hour; Premium emails are retained for 15 days. We store no raw IP addresses and keep no address history. Passwords are hashed and never readable. Users may delete their account and all data at any time.",
       "url": "https://mail.unknowns.app/privacy-policy.html"
     }
   }
@@ -185,7 +185,7 @@
     <div class="container">
       <article itemscope itemtype="https://schema.org/WebPage">
         <h1 itemprop="name">Privacy Policy</h1>
-        <p class="last-updated">Last Updated: <time datetime="2026-03-18" itemprop="dateModified">March 18, 2026</time></p>
+        <p class="last-updated">Last Updated: <time datetime="2026-07-26" itemprop="dateModified">July 26, 2026</time></p>
 
         <p itemprop="description">At Phantom Mail, we believe privacy is a fundamental right. We're committed to protecting your anonymity and minimizing data collection. This policy explains what minimal data we collect, how we use it solely for service delivery, and your rights.</p>
 
@@ -197,12 +197,12 @@
         <section aria-labelledby="section-data-collect">
           <h2 id="section-data-collect">1. Data We Collect</h2>
 
-          <h3>1.1 Temporary Email Addresses</h3>
-          <p>When you generate a temporary email address through our service, we collect and store:</p>
+          <h3>1.1 Disposable Email Addresses</h3>
+          <p>When you generate a disposable email address through our service, we collect and store:</p>
           <ul>
-            <li><strong>Email Address:</strong> The temporary email address you generated</li>
-            <li><strong>Email Content:</strong> The emails received at your temporary address</li>
-            <li><strong>Retention Period:</strong> Free users: 1 hour / Premium users: 30 days</li>
+            <li><strong>Email Address:</strong> The disposable address you generated (on the <code>@unkn0wn.qzz.io</code> or <code>@phant0m.qzz.io</code> domains). We generate a fresh, human-looking username each time and keep <strong>no history</strong> of previously generated addresses.</li>
+            <li><strong>Email Content:</strong> The emails received at your address (and, for accounts, mail you send)</li>
+            <li><strong>Retention Period:</strong> Free addresses self-destruct 1 hour after generation and hold up to 10 emails (the oldest is dropped past 10). Premium emails are retained for 15 days, up to 45 per address (30 inbox + 15 starred).</li>
           </ul>
 
           <h3>1.2 User Account Data (Optional)</h3>
@@ -212,17 +212,19 @@
             <li><strong>Password:</strong> Encrypted and hashed - we cannot see your password</li>
             <li><strong>Email (Optional):</strong> Only if you provide it - used for account purposes only</li>
             <li><strong>Premium Status:</strong> Whether you have an active Premium subscription</li>
-            <li><strong>Saved Addresses:</strong> Custom email addresses you've created (Premium only)</li>
+            <li><strong>Saved Addresses:</strong> Addresses you've kept on file (1 on Free, up to 15 on Premium)</li>
+            <li><strong>Custom Handle / Domain Choice:</strong> Your chosen handle and preferred domain (Premium only)</li>
             <li><strong>Forwarding Rules:</strong> Email forwarding preferences (Premium only)</li>
+            <li><strong>Address Ownership Keys:</strong> A public Ed25519 key reference used to prove ownership when re-claiming a previously generated address. We never see your private key.</li>
           </ul>
 
           <h3>1.3 Technical Data</h3>
-          <p>We automatically collect certain technical information via Cloudflare infrastructure:</p>
+          <p>We automatically process certain technical information via Cloudflare infrastructure:</p>
           <ul>
-            <li><strong>IP Address:</strong> Logged by Cloudflare for security and rate-limiting purposes</li>
-            <li><strong>Browser Information:</strong> User agent, browser type, and device information</li>
-            <li><strong>Access Logs:</strong> Pages visited, timestamps, and referrer information</li>
-            <li><strong>API Usage:</strong> For Developer API users, request counts for rate limiting</li>
+            <li><strong>No Raw IP Storage:</strong> We do <strong>not</strong> store your raw IP address. For abuse protection and rate-limiting we use short-lived, hashed/derived counters only — never a readable IP tied to your activity.</li>
+            <li><strong>Browser Information:</strong> User agent and device information, used transiently for security</li>
+            <li><strong>Access Logs:</strong> Standard edge request metadata handled by Cloudflare</li>
+            <li><strong>API Usage:</strong> For Developer API keys, per-key request counts for rate limiting (10/day receive on Free, 500 receive + 50 send on Premium)</li>
           </ul>
         </section>
 
@@ -233,7 +235,8 @@
             <li><strong>Service Delivery:</strong> To provide temporary email services and deliver emails to you</li>
             <li><strong>Account Management:</strong> To manage your account and Premium subscription</li>
             <li><strong>Security:</strong> To prevent abuse and spam - we protect our service, not monitor your usage</li>
-            <li><strong>Rate Limiting:</strong> To enforce API rate limits (100/day free, 10,000/day Premium)</li>
+            <li><strong>Rate Limiting:</strong> To enforce API limits (Free: 10 receive/day, sending blocked; Premium: 500 receive + 50 send/day) plus fair-use / abuse-protection thresholds</li>
+            <li><strong>Sending Mail:</strong> Sending requires an account (anonymous sending is disabled); we process the sender, recipient, and message to deliver it</li>
           </ul>
           <p><strong>What we DON'T do:</strong> We do not track your browsing behavior, monitor your email content, analyze your usage patterns for advertising, or share any data with third parties for marketing or law enforcement purposes.</p>
         </section>
@@ -241,19 +244,22 @@
         <section aria-labelledby="section-retention">
           <h2 id="section-retention">3. Data Retention</h2>
           <ul>
-            <li><strong>Free Temporary Emails:</strong> Automatically deleted after 1 hour</li>
-            <li><strong>Premium Saved Emails:</strong> Retained for 30 days, then automatically deleted</li>
-            <li><strong>Permanent Addresses:</strong> Retained as long as your Premium account is active</li>
+            <li><strong>Free Addresses:</strong> Self-destruct 1 hour after generation; hold up to 10 emails</li>
+            <li><strong>Premium Emails:</strong> Retained for 15 days, then automatically deleted; up to 45 per address (30 inbox + 15 starred)</li>
+            <li><strong>Saved Addresses:</strong> Retained as long as your account is active (1 on Free, up to 15 on Premium)</li>
             <li><strong>Account Data:</strong> Retained until you delete your account</li>
-            <li><strong>Technical Logs:</strong> Cloudflare logs are retained according to their data retention policies</li>
+            <li><strong>Rate-limit Counters:</strong> Short-lived counters that reset on their own; we keep no readable IP history</li>
           </ul>
         </section>
 
         <section aria-labelledby="section-third-parties">
           <h2 id="section-third-parties">4. Third Parties</h2>
-          <p>We respect your privacy and do <strong>not sell, rent, or share</strong> your personal data with anyone - not for marketing, not for law enforcement, not for any purpose. The only third-party service we use is:</p>
+          <p>We respect your privacy and do <strong>not sell, rent, or share</strong> your personal data with anyone - not for marketing, not for law enforcement, not for any purpose. We use a small set of infrastructure providers strictly to operate the service:</p>
           <ul>
-            <li><strong>Cloudflare:</strong> Our infrastructure provider for hosting, email routing, and CDN services. All data is processed on Cloudflare's edge network. We chose Cloudflare because they respect user privacy. See <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener">Cloudflare's Privacy Policy</a>.</li>
+            <li><strong>Cloudflare:</strong> Our core infrastructure — Pages, Workers, KV, R2 object storage, and Email Routing. All data is processed on Cloudflare's edge network. See <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener">Cloudflare's Privacy Policy</a>.</li>
+            <li><strong>Pusher:</strong> Powers real-time inbox push so new mail appears instantly. Only minimal channel/event data is relayed; no email content is stored by Pusher.</li>
+            <li><strong>Resend:</strong> Handles transactional and outbound email delivery (e.g. sending mail from your address, verification codes).</li>
+            <li><strong>NOWPayments:</strong> Processes Premium crypto payments. Payment metadata is handled by NOWPayments; we do not receive or store your wallet details.</li>
           </ul>
           <p><strong>Important:</strong> We have no ability to monitor your specific usage or share your information with authorities. We cannot see what you're doing with our service - by design.</p>
         </section>
@@ -309,7 +315,7 @@
           <h2 id="section-contact">11. Contact Us</h2>
           <p>If you have questions about this Privacy Policy or your data, contact us:</p>
           <ul>
-            <li><strong>Telegram:</strong> <a href="https://t.me/unknownlll2829" target="_blank" rel="noopener">@unknownlll2829</a></li>
+            <li><strong>Support Email:</strong> <a href="mailto:support@unkn0wn.qzz.io">support@unkn0wn.qzz.io</a></li>
             <li><strong>Website:</strong> <a href="https://mail.unknowns.app">mail.unknowns.app</a></li>
           </ul>
         </section>

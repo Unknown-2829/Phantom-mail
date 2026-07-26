@@ -229,14 +229,14 @@ export async function onRequestPost(context) {
 async function pushPaymentConfirmed(env, userKey, planId, newExpiry) {
     try {
         const cluster   = env.PUSHER_CLUSTER || 'ap2';
-        const channel   = `private-user-${await sha256Short(userKey)}`;
+        const channel   = `private-user-${await channelHash(userKey)}`;
         const eventBody = JSON.stringify({
             channel,
             name:  'payment_confirmed',
             data:  JSON.stringify({ planId, newExpiry, message: '🎉 Payment confirmed! Welcome to Pro.' })
         });
         const timestamp = String(Math.floor(Date.now() / 1000));
-        const bodyMd5   = await sha256Short(eventBody); // approximate md5
+        const bodyMd5   = await md5Hex(eventBody);
         const toSign    = `POST\n/apps/${env.PUSHER_APP_ID}/events\nauth_key=${env.PUSHER_KEY}&auth_timestamp=${timestamp}&auth_version=1.0&body_md5=${bodyMd5}&channel=${channel}&name=payment_confirmed`;
         const sig       = await hmacSha256Hex(env.PUSHER_SECRET, toSign);
         const qs        = `auth_key=${env.PUSHER_KEY}&auth_timestamp=${timestamp}&auth_version=1.0&body_md5=${bodyMd5}&auth_signature=${sig}`;
@@ -271,9 +271,18 @@ async function hmacSha256Hex(secret, msg) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function sha256Short(str) {
-    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+// Channel suffix — MUST match sha256Short in functions/api/pusher/auth.js:
+// sha256hex(input.toLowerCase().trim()).slice(0, 32), input = userKey ("user:{normalized}")
+async function channelHash(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
+}
+
+// Real MD5 body hash (Workers runtime supports MD5 in crypto.subtle) — Pusher
+// rejects triggers whose body_md5 does not match the actual MD5 of the body.
+async function md5Hex(str) {
+    const buf = await crypto.subtle.digest('MD5', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function sortObjectDeep(obj) {

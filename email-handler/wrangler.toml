@@ -17,6 +17,13 @@ PUSHER_APP_ID = "2179546"
 PUSHER_KEY = "c52890db708136e8b408"
 PUSHER_CLUSTER = "ap2"
 
+# ── Secrets (set with: wrangler secret put <NAME>) ──────────────────────────
+# PUSHER_SECRET  — required for real-time Pusher triggers.
+# RESEND_API_KEY — REQUIRED for email forwarding (outbound sends via Resend).
+#                  If unset, forward:{address} rules are silently skipped.
+# Optional var: RESEND_QUOTA_LIMIT (default "3000") — global daily cap shared
+# by API sends (analytics:emails_sent) + forwards (analytics:emails_forwarded).
+
 [[kv_namespaces]]
 binding = "EMAILS"
 id = "e939b6b99b65475f921642edf71d0187"

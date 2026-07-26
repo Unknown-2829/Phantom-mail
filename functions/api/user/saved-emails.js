@@ -99,6 +99,7 @@ async function handlePost(request, user, env, username, isPremium, maxSaved) {
     meta.isSaved   = true;
     meta.isPremium = isPremium;
     meta.savedAt   = Date.now();
+    meta.owner     = username; // ownership contract: session.username VERBATIM ('user:{normalized}')
     await env.INBOX_META.put(`meta:${addrHash}`, JSON.stringify(meta));
 
     savedAddresses.push({

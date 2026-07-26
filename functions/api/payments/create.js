@@ -44,13 +44,27 @@ export async function onRequestPost(context) {
         }
 
         // ── Check for already-pending payment (prevent double invoices) ────────
+        // Reserve-before-call: a double-click can fire two concurrent requests. If a
+        // valid pending intent already exists, return it verbatim instead of minting
+        // a second invoice.
         const pendingKey = `payment:pending:${session.username}`;
         const existing   = await env.EMAILS.get(pendingKey, { type: 'json' }).catch(() => null);
         if (existing && existing.expiresAt && existing.expiresAt > Date.now()) {
             return jsonResponse({
-                error: 'You have a pending payment. Complete or wait for it to expire before creating a new one.',
-                existing: { paymentId: existing.paymentId, expiresAt: existing.expiresAt }
-            }, 409);
+                success:       true,
+                pending:       true,
+                message:       'You already have a pending payment.',
+                paymentId:     existing.paymentId,
+                payAddress:    existing.payAddress    || null,
+                payAmount:     existing.payAmount     || null,
+                payCurrency:   existing.payCurrency   || null,
+                priceAmount:   existing.priceAmount   || null,
+                priceCurrency: existing.priceCurrency || null,
+                status:        existing.status        || 'waiting',
+                expiresAt:     existing.expiresAt,
+                qrCode:        existing.paymentId ? `https://api.nowpayments.io/v1/payment/${existing.paymentId}/qr` : null,
+                plan:          existing.plan          || null
+            }, 200);
         }
 
         // ── Validate plan ────────────────────────────────────────────────────
@@ -70,6 +84,36 @@ export async function onRequestPost(context) {
         // ── NOWPayments API ──────────────────────────────────────────────────
         if (!env.NOWPAYMENTS_API_KEY) {
             return jsonResponse({ error: 'Payment service not configured' }, 503);
+        }
+
+        // ── Reserve the pending guard BEFORE calling NOWPayments ───────────────
+        // PUT a placeholder guard with a unique intentId, then re-GET to confirm we
+        // own it. A racing double-click that lost the write will read a different
+        // intentId and bail, so we never mint two invoices.
+        const intentId = crypto.randomUUID();
+        await env.EMAILS.put(pendingKey, JSON.stringify({
+            intentId,
+            planId,
+            status:    'reserving',
+            expiresAt: Date.now() + 3600 * 1000
+        }), { expirationTtl: 3600 });
+
+        const confirm = await env.EMAILS.get(pendingKey, { type: 'json' }).catch(() => null);
+        if (!confirm || confirm.intentId !== intentId) {
+            // Another concurrent request won the reservation — surface its intent.
+            if (confirm && confirm.expiresAt && confirm.expiresAt > Date.now()) {
+                return jsonResponse({
+                    success:   true,
+                    pending:   true,
+                    message:   'You already have a pending payment.',
+                    paymentId: confirm.paymentId || null,
+                    status:    confirm.status || 'waiting',
+                    expiresAt: confirm.expiresAt
+                }, 200);
+            }
+            return jsonResponse({
+                error: 'A payment is already being created. Please wait a moment and try again.'
+            }, 409);
         }
 
         const paymentRes = await fetch('https://api.nowpayments.io/v1/payment', {
@@ -94,6 +138,8 @@ export async function onRequestPost(context) {
 
         if (!paymentRes.ok) {
             console.error('[payments/create] NOWPayments error:', paymentData);
+            // Release the reservation guard so the user can retry immediately
+            await env.EMAILS.delete(pendingKey).catch(() => {});
             return jsonResponse({ error: 'Failed to create payment. Please try again.' }, 502);
         }
 
@@ -120,11 +166,20 @@ export async function onRequestPost(context) {
             createdAt: Date.now()
         }), { expirationTtl: 90 * 86400 });
 
-        // Pending-payment guard (1hr TTL — NOWPayments invoice expiry)
+        // Pending-payment guard (1hr TTL — NOWPayments invoice expiry).
+        // Store the full invoice so a duplicate request can return it verbatim.
         await env.EMAILS.put(pendingKey, JSON.stringify({
-            paymentId:  paymentData.payment_id,
+            intentId,
+            paymentId:     paymentData.payment_id,
             planId,
-            expiresAt:  Date.now() + 3600 * 1000
+            payAddress:    paymentData.pay_address    || null,
+            payAmount:     paymentData.pay_amount     || null,
+            payCurrency:   paymentData.pay_currency   || null,
+            priceAmount:   paymentData.price_amount   || null,
+            priceCurrency: paymentData.price_currency || null,
+            status:        paymentData.payment_status || 'waiting',
+            plan:          { id: planId, label: plan.label, days: plan.days, priceUSD: plan.priceUSD },
+            expiresAt:     Date.now() + 3600 * 1000
         }), { expirationTtl: 3600 });
 
         return jsonResponse({

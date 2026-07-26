@@ -11,10 +11,47 @@
  * Body: { address: string, keys: string[], action: 'delete'|'read'|'star', value?: boolean }
  *
  * Auth: optional Bearer token (for session-linked mailboxes)
+ * Security: every key must match the server-computed HASHED prefix for the address,
+ * and claimed/saved addresses require the owner session.
  * Limit: max 100 emails per batch to prevent abuse
  */
 
 const MAX_BATCH = 100;
+
+// SHA-256 hex helper (matches backend worker)
+async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(str.toLowerCase().trim())
+    );
+    return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function domainKey(domain) {
+    if (domain === 'unkn0wn.qzz.io') return 'unkn0wn';
+    if (domain === 'phant0m.qzz.io') return 'phant0m';
+    return domain.split('.')[0];
+}
+
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
+// Derive the KV TTL for a re-PUT from meta (saved/premium = 15d, else 1h temp).
+function resolveTtl(meta) {
+    if (!meta) return 3600;
+    if (meta.isSaved || meta.isPremium) return 15 * 86400;
+    return 3600;
+}
+
+async function bumpVersion(env, addrHash) {
+    try {
+        const cur = parseInt((await env.INBOX_META.get(`meta:${addrHash}.v`)) || '0', 10);
+        await env.INBOX_META.put(`meta:${addrHash}.v`, String(cur + 1));
+    } catch (_) {}
+}
 
 export async function onRequestPost(context) {
     const { request, env } = context;
@@ -31,24 +68,42 @@ export async function onRequestPost(context) {
         if (keys.length > MAX_BATCH) return json({ error: `Max ${MAX_BATCH} emails per batch` }, 400);
         if (!['delete', 'read', 'star'].includes(action)) return json({ error: 'action must be delete|read|star' }, 400);
 
-        // Security: all keys must belong to the specified address
-        const prefix = `email:${address.toLowerCase().trim()}:`;
-        const invalid = keys.filter(k => !k.startsWith(prefix));
+        // Security: every key must match the server-computed HASHED prefix
+        const norm     = address.toLowerCase().trim();
+        const domain   = norm.split('@')[1] || '';
+        const dKey     = domainKey(domain);
+        const addrHash = await sha256Hex(norm);
+        const prefix   = `email:${dKey}:${addrHash}:`;
+        const invalid  = keys.filter(k => !k.startsWith(prefix));
         if (invalid.length > 0) return json({ error: 'Some keys do not belong to the specified address' }, 403);
 
-        // Optional: verify session token has access (or user owns the address)
+        // ── Ownership gate: claimed/saved addresses require the owner session ──
+        const metaStr = await env.INBOX_META.get(`meta:${addrHash}`);
+        let meta = null;
+        try { meta = metaStr ? JSON.parse(metaStr) : null; } catch (_) { meta = null; }
+
+        const protectedAddr = !!meta && (meta.isSaved === true || !!meta.owner || !!meta.claimedBy);
         const token = request.headers.get('Authorization')?.replace('Bearer ', '');
+        let session = null;
         if (token) {
-            const session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
+            session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
             if (!session || session.expiresAt < Date.now()) return json({ error: 'Session expired' }, 401);
         }
 
+        if (protectedAddr) {
+            const ownerVal = meta.owner || meta.claimedBy;
+            if (!session || normalizeUser(session.username) !== normalizeUser(ownerVal)) {
+                return json({ error: 'This address is claimed. Sign in as its owner.' }, 403);
+            }
+        }
+
+        const ttl = resolveTtl(meta);
         const errors = [];
         let processed = 0;
 
         switch (action) {
             case 'delete': {
-                // Delete emails and their R2 attachments in parallel
+                // Delete R2 attachments BEFORE the KV record (crash → recoverable, not orphaned)
                 const deleteOps = keys.map(async key => {
                     try {
                         const emailData = await env.EMAILS.get(key, { type: 'json' });
@@ -62,7 +117,7 @@ export async function onRequestPost(context) {
                         }
                         await env.EMAILS.delete(key);
                         // Delete from inbox index
-                        const idxKey = `idx:${address.toLowerCase().trim()}:${key}`;
+                        const idxKey = `idx:${norm}:${key}`;
                         await env.EMAILS.delete(idxKey).catch(() => {});
                         processed++;
                     } catch (e) {
@@ -70,6 +125,7 @@ export async function onRequestPost(context) {
                     }
                 });
                 await Promise.allSettled(deleteOps);
+                await bumpVersion(env, addrHash);
                 break;
             }
 
@@ -81,13 +137,15 @@ export async function onRequestPost(context) {
                         if (!emailData) { errors.push({ key, error: 'Not found' }); return; }
                         emailData.starred = value;
                         emailData.starredAt = value ? Date.now() : null;
-                        await env.EMAILS.put(key, JSON.stringify(emailData));
+                        // Preserve the record's original TTL on re-PUT
+                        await env.EMAILS.put(key, JSON.stringify(emailData), { expirationTtl: ttl });
                         processed++;
                     } catch (e) {
                         errors.push({ key, error: e.message });
                     }
                 });
                 await Promise.allSettled(starOps);
+                await bumpVersion(env, addrHash);
                 break;
             }
 

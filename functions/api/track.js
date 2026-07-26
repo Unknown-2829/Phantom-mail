@@ -65,6 +65,33 @@ export async function onRequestGet(context) {
     return pixelResponse;
 }
 
+// Site root — safe fallback for unknown/mismatched redirects (open-redirect guard).
+const SAFE_FALLBACK = 'https://mail.unknowns.app/';
+
+// True only if `dest` was one of the links actually sent in this tracked email.
+//   - sentLinks: allowlist captured at send time (exact rewritten URLs)
+//   - clickLinks: { url: count } map populated as clicks are recorded
+// Match both the raw dest and its normalized URL form to tolerate re-encoding.
+function isKnownLink(record, dest) {
+    if (!record) return false;
+    const candidates = new Set([dest]);
+    try { candidates.add(new URL(dest).href); } catch {}
+
+    if (Array.isArray(record.sentLinks)) {
+        for (const l of record.sentLinks) {
+            if (candidates.has(l)) return true;
+            try { if (candidates.has(new URL(l).href)) return true; } catch {}
+        }
+    }
+    if (record.clickLinks) {
+        for (const l of Object.keys(record.clickLinks)) {
+            if (candidates.has(l)) return true;
+            try { if (candidates.has(new URL(l).href)) return true; } catch {}
+        }
+    }
+    return false;
+}
+
 // ── Click Redirect ─────────────────────────────────────────────────────────────
 async function handleClick(context) {
     const { request, env } = context;
@@ -81,6 +108,18 @@ async function handleClick(context) {
         }
     } catch {
         return new Response('Invalid URL', { status: 400 });
+    }
+
+    // ── Open-redirect guard ───────────────────────────────────────────────────
+    // Only 302 to a URL that this trackingId's email actually contained.
+    // Unknown trackingId or a url not present in the stored click-link set → site root.
+    let record = null;
+    if (trackingId && env.EMAILS) {
+        const sentKey = await env.EMAILS.get(`track:${trackingId}`).catch(() => null);
+        if (sentKey) record = await env.EMAILS.get(sentKey, { type: 'json' }).catch(() => null);
+    }
+    if (!isKnownLink(record, destUrl.href)) {
+        return Response.redirect(SAFE_FALLBACK, 302);
     }
 
     // Record click in background

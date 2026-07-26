@@ -45,15 +45,54 @@ function isSafeUrl(url) {
     }
 }
 
+// Site root — safe fallback for unknown/mismatched redirects (open-redirect guard).
+const SAFE_FALLBACK = 'https://mail.unknowns.app/';
+
+// True only if `dest` was one of the links actually sent in this tracked email.
+//   - sentLinks: allowlist captured at send time (exact rewritten URLs)
+//   - clickLinks: { url: count } map populated as clicks are recorded
+// Match both the raw dest and its normalized URL form to tolerate re-encoding.
+function isKnownLink(record, dest) {
+    if (!record) return false;
+    const candidates = new Set([dest]);
+    try { candidates.add(new URL(dest).href); } catch {}
+
+    if (Array.isArray(record.sentLinks)) {
+        for (const l of record.sentLinks) {
+            if (candidates.has(l)) return true;
+            try { if (candidates.has(new URL(l).href)) return true; } catch {}
+        }
+    }
+    if (record.clickLinks) {
+        for (const l of Object.keys(record.clickLinks)) {
+            if (candidates.has(l)) return true;
+            try { if (candidates.has(new URL(l).href)) return true; } catch {}
+        }
+    }
+    return false;
+}
+
 export async function onRequestGet(context) {
     const { request, env } = context;
     const url        = new URL(request.url);
     const trackingId = url.searchParams.get('id');
     const dest       = url.searchParams.get('url');
 
-    // ── Validate ─────────────────────────────────────────────────────────────
+    // ── Validate scheme + length ─────────────────────────────────────────────
     if (!dest || !isSafeUrl(dest) || dest.length > 2048) {
-        return Response.redirect('https://unkn0wn.qzz.io', 302);
+        return Response.redirect(SAFE_FALLBACK, 302);
+    }
+
+    // ── Resolve the sent record + open-redirect guard ────────────────────────
+    // Only ever 302 to a URL that this trackingId's email actually contained.
+    let record = null;
+    if (trackingId && env.EMAILS) {
+        const sentKey = await env.EMAILS.get(`track:${trackingId}`).catch(() => null);
+        if (sentKey) record = await env.EMAILS.get(sentKey, { type: 'json' }).catch(() => null);
+    }
+    if (!isKnownLink(record, dest)) {
+        // Unknown trackingId, or a url not present in the stored click-link set.
+        return Response.redirect(SAFE_FALLBACK, 302);
     }
 
     const ua = request.headers.get('User-Agent') || '';
@@ -66,18 +105,19 @@ export async function onRequestGet(context) {
 
     // ── Record click async (don't delay redirect) ─────────────────────────────
     if (trackingId && env.EMAILS) {
-        context.waitUntil(recordClick({ trackingId, dest, request, env }));
+        context.waitUntil(recordClick({ trackingId, dest, request, env, record }));
     }
 
     return Response.redirect(dest, 302);
 }
 
-async function recordClick({ trackingId, dest, request, env }) {
+async function recordClick({ trackingId, dest, request, env, record: preloaded }) {
     try {
         const sentKey = await env.EMAILS.get(`track:${trackingId}`).catch(() => null);
         if (!sentKey) return;
 
-        const record = await env.EMAILS.get(sentKey, { type: 'json' }).catch(() => null);
+        // Reuse the record resolved during the redirect guard when available.
+        const record = preloaded || await env.EMAILS.get(sentKey, { type: 'json' }).catch(() => null);
         if (!record) return;
 
         const ip        = request.headers.get('CF-Connecting-IP') || '';

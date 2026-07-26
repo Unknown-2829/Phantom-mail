@@ -22,6 +22,10 @@ export async function onRequestPost(context) {
         let targetEmail;
         let userKey;
 
+        // Generic response for password_reset — identical whether or not the
+        // account exists or has a recovery email on file (prevents enumeration).
+        const RESET_GENERIC = { success: true, message: 'If an account with a recovery email exists, a code has been sent.' };
+
         if (type === 'email_verify') {
             if (!username) return jsonResponse({ error: 'Username is required' }, 400);
             // Normalise: trim, lowercase, spaces → underscores (mirrors signup logic)
@@ -46,12 +50,12 @@ export async function onRequestPost(context) {
             let normalised = username.trim().toLowerCase();
             if (!normalised.includes('@')) normalised = normalised.replace(/\s+/g, '_');
             userKey = `user:${normalised}`;
+            // Always perform the lookup (uniform timing) but never reveal whether
+            // the account exists or has a recovery email — return the generic
+            // success response in both cases. Only send when a real email exists.
             const user = await env.EMAILS.get(userKey, { type: 'json' });
-            if (!user) {
-                return jsonResponse({ error: 'Username not found' }, 404);
-            }
-            if (!user.email) {
-                return jsonResponse({ error: 'No recovery email on file for this account' }, 400);
+            if (!user || !user.email) {
+                return jsonResponse(RESET_GENERIC);
             }
             targetEmail = user.email.toLowerCase();
 
@@ -76,6 +80,8 @@ export async function onRequestPost(context) {
         const rateRaw = await env.EMAILS.get(rateLimitKey);
         const rateCount = rateRaw ? parseInt(rateRaw, 10) : 0;
         if (rateCount >= 3) {
+            // For password_reset, don't reveal the account exists via a 429.
+            if (type === 'password_reset') return jsonResponse(RESET_GENERIC);
             return jsonResponse({ error: 'Too many codes requested. Please wait 10 minutes.' }, 429);
         }
 
@@ -117,11 +123,18 @@ export async function onRequestPost(context) {
         });
 
         if (!emailRes.ok) {
+            // password_reset: keep the response uniform even on a provider outage.
+            if (type === 'password_reset') return jsonResponse(RESET_GENERIC);
             return jsonResponse({ error: 'Failed to send email. Please try again.' }, 500);
         }
 
         // Increment rate limit only after successful send
         await env.EMAILS.put(rateLimitKey, String(rateCount + 1), { expirationTtl: 600 });
+
+        // password_reset: never leak the masked recovery email before verification.
+        if (type === 'password_reset') {
+            return jsonResponse({ ...RESET_GENERIC, otpToken });
+        }
 
         const maskedEmail = maskEmail(targetEmail);
         return jsonResponse({ success: true, otpToken, maskedEmail });

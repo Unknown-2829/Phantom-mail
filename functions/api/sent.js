@@ -17,6 +17,52 @@
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT     = 200;
 
+// SHA-256 hex helper (matches backend worker)
+async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(str.toLowerCase().trim())
+    );
+    return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
+/**
+ * Ownership gate for the anonymous ?address= path.
+ * Returns { ok: true } if allowed, else { ok: false, response }.
+ * Protected (claimed/saved) addresses require the owner Bearer session.
+ */
+async function requireAddressOwner(env, request, address) {
+    const addrHash = await sha256Hex(address);
+    const metaStr = await env.INBOX_META.get(`meta:${addrHash}`);
+    if (!metaStr) return { ok: true };
+    let meta = {};
+    try { meta = JSON.parse(metaStr); } catch (_) { return { ok: true }; }
+
+    const protectedAddr = meta.isSaved === true || !!meta.owner || !!meta.claimedBy;
+    if (!protectedAddr) return { ok: true };
+
+    const ownerVal = meta.owner || meta.claimedBy;
+    const authHeader = request.headers.get('Authorization') || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (token) {
+        const session = await env.EMAILS.get(`session:${token}`, { type: 'json' });
+        if (session && session.expiresAt > Date.now() &&
+            normalizeUser(session.username) === normalizeUser(ownerVal)) {
+            return { ok: true };
+        }
+    }
+    return {
+        ok: false,
+        response: json({ error: 'This address is claimed. Sign in as its owner.' }, 403)
+    };
+}
+
 export async function onRequestGet(context) {
     const { request, env } = context;
     const url    = new URL(request.url);
@@ -59,6 +105,10 @@ export async function onRequestGet(context) {
     // ── Address-based lookup (anonymous / session expired) ───────────────────
     const address = url.searchParams.get('address');
     if (!address) return json({ error: 'address required' }, 400);
+
+    // Ownership gate: sent mail for a claimed/saved address requires the owner.
+    const gate = await requireAddressOwner(env, request, address);
+    if (!gate.ok) return gate.response;
 
     try {
         const keys = await env.EMAILS.list({ prefix: `sent:${address}:`, limit: MAX_LIMIT });

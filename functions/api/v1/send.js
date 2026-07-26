@@ -105,11 +105,13 @@ export async function onRequestPost(context) {
 
     const trackingId = crypto.randomUUID().replace(/-/g, '');
 
-    // Rewrite HTML links for click tracking
+    // Rewrite HTML links for click tracking. Collect the exact destination URLs
+    // so the redirect endpoint can enforce an open-redirect allowlist per email.
     let finalBody = emailBody;
+    const sentLinks = [];
     if (isHtml && trackClicks) {
         const trackingDomain = 'unkn0wn.qzz.io';
-        finalBody = rewriteLinksForTracking(emailBody, trackingId, trackingDomain);
+        finalBody = rewriteLinksForTracking(emailBody, trackingId, trackingDomain, sentLinks);
     }
 
     const resendPayload = {
@@ -150,7 +152,9 @@ export async function onRequestPost(context) {
         id: resendResult.id, trackingId,
         from, to: recipients, subject,
         sentAt: Date.now(), status: 'sent',
-        source: 'v1-api'
+        source: 'v1-api',
+        // Open-redirect allowlist: exact URLs the click endpoint may 302 to.
+        sentLinks
     }), { expirationTtl: 15 * 86400 });
 
     await env.EMAILS.put(`sentid:${resendResult.id}`, sentKey, { expirationTtl: 15 * 86400 });
@@ -177,12 +181,14 @@ export async function onRequestPost(context) {
  * click-tracking redirect endpoint.
  * Only rewrites http/https links (not mailto:, #, etc.)
  */
-function rewriteLinksForTracking(html, trackingId, trackingDomain) {
+function rewriteLinksForTracking(html, trackingId, trackingDomain, sentLinks) {
     return html.replace(
         /(<a\s[^>]*href=["'])(https?:\/\/[^"'\s>]+)(["'][^>]*>)/gi,
         (match, before, url, after) => {
             // Skip our own tracking domain to avoid double-wrapping
             if (url.includes(trackingDomain + '/api/track')) return match;
+            // Record the exact destination so the redirect endpoint can allow it.
+            if (Array.isArray(sentLinks) && !sentLinks.includes(url)) sentLinks.push(url);
             const redirectUrl = `https://${trackingDomain}/api/track/click?id=${trackingId}&url=${encodeURIComponent(url)}`;
             return `${before}${redirectUrl}${after}`;
         }

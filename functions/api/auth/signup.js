@@ -49,6 +49,35 @@ export async function onRequestPost(context) {
             return jsonResponse({ error: 'Username already taken' }, 400);
         }
 
+        // ── Username uniqueness reservation (KV has no CAS) ─────────────────────
+        // Race guard: two concurrent signups for the same normalised username can
+        // both pass the check-then-write above. We reserve with a short-lived claim
+        // key; the LOWEST token value wins. Non-winners bail with 409.
+        const claimToken  = crypto.randomUUID();
+        const claimPrefix = `usernameclaim:${normalised}:`;
+        const claimKey    = `${claimPrefix}${claimToken}`;
+        await env.EMAILS.put(claimKey, '1', { expirationTtl: 30 });
+
+        const claimList = await env.EMAILS.list({ prefix: claimPrefix });
+        if (claimList.keys.length > 1) {
+            const tokens = claimList.keys
+                .map(k => k.name.slice(claimPrefix.length))
+                .sort();
+            if (tokens[0] !== claimToken) {
+                // We are not the winner — release our claim and bail
+                await env.EMAILS.delete(claimKey).catch(() => {});
+                return jsonResponse({ error: 'Username unavailable, try again.' }, 409);
+            }
+        }
+
+        // Re-check the user record now that we hold the winning claim — closes the
+        // window where another request committed between our first GET and now.
+        const existingAfterClaim = await env.EMAILS.get(userKey);
+        if (existingAfterClaim) {
+            await env.EMAILS.delete(claimKey).catch(() => {});
+            return jsonResponse({ error: 'Username unavailable, try again.' }, 409);
+        }
+
         let emailVerified = false;
 
         // If OTP token provided, verify it before creating account
@@ -56,23 +85,28 @@ export async function onRequestPost(context) {
             const otpKey = `otp:${otpToken}`;
             const otpRaw = await env.EMAILS.get(otpKey);
             if (!otpRaw) {
+                await env.EMAILS.delete(claimKey).catch(() => {});
                 return jsonResponse({ error: 'Invalid or expired verification code' }, 400);
             }
             const otpData = JSON.parse(otpRaw);
             if (otpData.type !== 'email_verify') {
+                await env.EMAILS.delete(claimKey).catch(() => {});
                 return jsonResponse({ error: 'Invalid verification token' }, 400);
             }
             if (Date.now() > otpData.expiresAt) {
                 await env.EMAILS.delete(otpKey);
+                await env.EMAILS.delete(claimKey).catch(() => {});
                 return jsonResponse({ error: 'Verification code has expired' }, 400);
             }
             if (otpData.attempts >= 5) {
                 await env.EMAILS.delete(otpKey);
+                await env.EMAILS.delete(claimKey).catch(() => {});
                 return jsonResponse({ error: 'Too many wrong attempts. Please request a new code.' }, 400);
             }
             if (!constantTimeEqual(otpData.code, String(emailOtp).trim())) {
                 otpData.attempts += 1;
                 await env.EMAILS.put(otpKey, JSON.stringify(otpData), { expirationTtl: 600 });
+                await env.EMAILS.delete(claimKey).catch(() => {});
                 const remaining = 5 - otpData.attempts;
                 return jsonResponse({
                     error: remaining > 0
@@ -124,6 +158,9 @@ export async function onRequestPost(context) {
                 lastUsed: null
             }));
         }
+
+        // Winner has committed — release the reservation key
+        await env.EMAILS.delete(claimKey).catch(() => {});
 
         // Create session
         const token = generateToken();

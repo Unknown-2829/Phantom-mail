@@ -15,8 +15,8 @@
   <link rel="manifest" href="/manifest.json">
 
   <!-- Primary SEO -->
-  <meta name="description" content="Upgrade to Phantom Mail Premium for permanent emails, custom usernames, API access and more.">
-  <meta name="keywords" content="phantom mail premium, permanent disposable email, custom email address, anonymous email premium">
+  <meta name="description" content="Upgrade to Phantom Mail Premium for 15-day retention, custom handles, domain choice, email forwarding and full API access.">
+  <meta name="keywords" content="phantom mail premium, disposable email retention, custom email handle, anonymous email premium">
   <meta name="author" content="Phantom Mail">
   <meta name="theme-color" content="#00d09c">
   <meta name="robots" content="index, follow">
@@ -26,7 +26,7 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://mail.unknowns.app/premium.html">
   <meta property="og:title" content="Phantom Mail Premium — Advanced Anonymous Email">
-  <meta property="og:description" content="Upgrade to Phantom Mail Premium. Permanent addresses, custom usernames, developer API, and more.">
+  <meta property="og:description" content="Upgrade to Phantom Mail Premium. 15-day retention, custom handles, domain choice, developer API, and more.">
   <meta property="og:image" content="https://assets.unknowns.app/logo-premium.png">
   <meta property="og:image:alt" content="Phantom Mail Premium">
   <meta property="og:site_name" content="Phantom Mail">
@@ -34,7 +34,7 @@
   <!-- Twitter Card -->
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Phantom Mail Premium — Advanced Anonymous Email">
-  <meta name="twitter:description" content="Upgrade to Phantom Mail Premium. Permanent addresses, custom usernames, developer API.">
+  <meta name="twitter:description" content="Upgrade to Phantom Mail Premium. 15-day retention, custom handles, domain choice, developer API.">
   <meta name="twitter:image" content="https://assets.unknowns.app/logo-premium.png">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -731,25 +731,6 @@
 
     .prem-back-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
 
-    .google-login-btn {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      background: rgba(255,255,255,0.07);
-      border: 1px solid rgba(255,255,255,0.15);
-      color: #fff;
-      padding: 12px 20px;
-      border-radius: 12px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.2s, border-color 0.2s;
-      width: 100%;
-    }
-    .google-login-btn:hover { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.25); }
-    .google-login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
     .otp-input { letter-spacing: 0.3em; font-size: 20px; text-align: center; }
 
     /* ---- Responsive ---- */
@@ -787,7 +768,7 @@
   <div class="prem-hero">
     <div class="prem-hero-badge">⭐ Phantom Mail Premium</div>
     <h1>Privacy without<br><span class="gold">limits.</span></h1>
-    <p>Permanent email addresses, custom usernames, email forwarding, and full API access.</p>
+    <p>15-day retention, custom handles &amp; domain choice, email forwarding, and full send + receive API access.</p>
   </div>
 
   <!-- Step Progress Bar -->
@@ -817,22 +798,22 @@
         <div class="prem-feat">
           <span class="prem-feat-ico">💾</span>
           <div class="prem-feat-text">
-            <strong>8 Permanent Emails</strong>
-            <span>Addresses that never expire</span>
+            <strong>15 Saved Addresses</strong>
+            <span>Keep up to 15 addresses on file</span>
           </div>
         </div>
         <div class="prem-feat">
           <span class="prem-feat-ico">🎯</span>
           <div class="prem-feat-text">
-            <strong>Custom Usernames</strong>
-            <span>Pick your own address handle</span>
+            <strong>Custom Handle + Domain</strong>
+            <span>Pick your handle &amp; choose your domain</span>
           </div>
         </div>
         <div class="prem-feat">
           <span class="prem-feat-ico">📅</span>
           <div class="prem-feat-text">
-            <strong>30-Day Email Retention</strong>
-            <span>Premium emails last 30 days</span>
+            <strong>15-Day Retention</strong>
+            <span>45 emails/address (30 inbox + 15 starred)</span>
           </div>
         </div>
         <div class="prem-feat">
@@ -846,7 +827,7 @@
           <span class="prem-feat-ico">🔌</span>
           <div class="prem-feat-text">
             <strong>Developer API</strong>
-            <span>10,000 requests/day</span>
+            <span>500 receive + 50 send / day</span>
           </div>
         </div>
         <div class="prem-feat">
@@ -862,28 +843,33 @@
       <div class="prem-compare glass-card">
         <div class="comp-row comp-head">
           <div class="c-feat">Feature</div>
-          <div class="c-free">Basic</div>
+          <div class="c-free">Free</div>
           <div class="c-prem">Premium</div>
         </div>
         <div class="comp-row">
-          <div class="c-feat">Temporary Addresses</div>
-          <div class="c-free">1 hr only</div>
-          <div class="c-prem"><span class="c-check">✓</span> Unlimited</div>
+          <div class="c-feat">Address Lifetime</div>
+          <div class="c-free">1 hr self-destruct</div>
+          <div class="c-prem"><span class="c-check">✓</span> 15-day retention</div>
         </div>
         <div class="comp-row">
-          <div class="c-feat">Email Retention</div>
-          <div class="c-free">1 hour</div>
-          <div class="c-prem"><span class="c-check">✓</span> 30 days</div>
+          <div class="c-feat">Emails per Address</div>
+          <div class="c-free">10 (oldest auto-deleted)</div>
+          <div class="c-prem"><span class="c-check">✓</span> 45 (30 + 15 starred)</div>
         </div>
         <div class="comp-row">
-          <div class="c-feat">Permanent Addresses</div>
-          <div class="c-free">❌</div>
-          <div class="c-prem"><span class="c-check">✓</span> Up to 8</div>
+          <div class="c-feat">Saved Addresses</div>
+          <div class="c-free">1</div>
+          <div class="c-prem"><span class="c-check">✓</span> 15</div>
         </div>
         <div class="comp-row">
-          <div class="c-feat">Custom Usernames</div>
+          <div class="c-feat">Custom Handle + Domain</div>
           <div class="c-free">❌</div>
           <div class="c-prem"><span class="c-check">✓</span> Yes</div>
+        </div>
+        <div class="comp-row">
+          <div class="c-feat">Sends per Day (UI)</div>
+          <div class="c-free">3</div>
+          <div class="c-prem"><span class="c-check">✓</span> 25</div>
         </div>
         <div class="comp-row">
           <div class="c-feat">Email Forwarding</div>
@@ -891,9 +877,14 @@
           <div class="c-prem"><span class="c-check">✓</span> Yes</div>
         </div>
         <div class="comp-row">
-          <div class="c-feat">API Access</div>
-          <div class="c-free">❌</div>
-          <div class="c-prem"><span class="c-check">✓</span> 10,000 req/day</div>
+          <div class="c-feat">API — Receive</div>
+          <div class="c-free">10/day (receive only)</div>
+          <div class="c-prem"><span class="c-check">✓</span> 500/day</div>
+        </div>
+        <div class="comp-row">
+          <div class="c-feat">API — Send</div>
+          <div class="c-free">❌ Blocked</div>
+          <div class="c-prem"><span class="c-check">✓</span> 50/day</div>
         </div>
         <div class="comp-row">
           <div class="c-feat">Priority Support</div>
@@ -906,13 +897,13 @@
       <div class="prem-pricing">
         <div class="prem-price-card monthly-card" id="pp-monthly" onclick="ppSelectPlan('monthly')">
           <div class="price-name">Monthly</div>
-          <div class="price-amount">$3<sub>/mo</sub></div>
+          <div class="price-amount">$5<sub>/mo</sub></div>
         </div>
         <div class="prem-price-card featured" id="pp-yearly" onclick="ppSelectPlan('yearly')">
-          <div class="price-badge">Best Value — Save 45%</div>
+          <div class="price-badge">Best Value — Save 33%</div>
           <div class="price-name">Yearly</div>
-          <div class="price-amount">$20<sub>/yr</sub></div>
-          <div class="price-save">~$1.67/mo</div>
+          <div class="price-amount">$40<sub>/yr</sub></div>
+          <div class="price-save">~$3.33/mo</div>
         </div>
       </div>
 
@@ -926,18 +917,6 @@
         <div class="prem-auth-box">
           <h2 style="font-size:22px;font-weight:800;margin-bottom:6px;">Create or Sign In</h2>
           <p style="color:#8b8baf;font-size:14px;margin-bottom:20px;">An account is required to link your Premium subscription.</p>
-
-          <!-- Google Auth Button -->
-          <button onclick="ppGoogleLogin()" class="google-login-btn pp-google-btn" type="button" style="width:100%;margin-bottom:12px;">
-            <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/>
-              <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/>
-              <path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/>
-              <path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/>
-            </svg>
-            Continue with Google
-          </button>
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;"><hr style="flex:1;border-color:rgba(255,255,255,0.1);"><span style="font-size:12px;color:#666;">or</span><hr style="flex:1;border-color:rgba(255,255,255,0.1);"></div>
 
           <div class="prem-auth-tabs">
             <button class="prem-auth-tab active" id="pp-tab-signup" onclick="ppSwitchTab('signup')">Create Account</button>
@@ -1026,7 +1005,7 @@
               <div class="cs-label">Selected Plan</div>
               <div class="cs-plan" id="pp-plan-name">Yearly Premium</div>
             </div>
-            <div class="cs-amount" id="pp-plan-price">$20</div>
+            <div class="cs-amount" id="pp-plan-price">$40</div>
           </div>
 
           <!-- Step 1: Send Crypto -->
@@ -1057,20 +1036,20 @@
 
           <div class="co-divider"></div>
 
-          <!-- Step 3: Contact -->
+          <!-- Step 3: Confirm -->
           <div class="checkout-step-label">
             <span class="checkout-step-num">3</span>
-            Contact us on Telegram — Premium activated within minutes!
+            Once the payment confirms on-chain, Premium activates automatically.
           </div>
 
-          <a class="telegram-btn" id="pp-tg-link" href="https://t.me/unknownlll2829" target="_blank" rel="noopener">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.196 13.26l-2.99-.932c-.65-.204-.664-.65.136-.961l11.678-4.503c.543-.196 1.018.119.874.357z"/></svg>
-            I have paid — Activate Premium
+          <a class="telegram-btn" id="pp-pay-link" href="mailto:support@unkn0wn.qzz.io?subject=Premium%20Payment" style="background:linear-gradient(135deg,#00d09c,#00b386);box-shadow:0 4px 16px rgba(0,208,156,0.3);">
+            💳 Pay with Crypto
           </a>
 
           <p class="checkout-note">
-            After sending payment, DM <strong style="color:#0088cc">@unknownlll2829</strong> on Telegram with your<br>
-            <strong>username</strong> and <strong>transaction hash</strong>. Premium is activated manually by the admin.
+            Payments are processed by <strong style="color:#00d09c">NOWPayments</strong>. After the transaction confirms on-chain,
+            Premium is activated automatically for your account. Need help? Email
+            <strong style="color:#00d09c">support@unkn0wn.qzz.io</strong>.
           </p>
         </div>
       </div>
@@ -1157,7 +1136,7 @@
     /* ---- Plan Selection ---- */
     function ppSelectPlan(plan) {
       ppState.plan = plan;
-      ppState.price = plan === 'yearly' ? 20 : 3;
+      ppState.price = plan === 'yearly' ? 40 : 5;
 
       document.getElementById('pp-monthly').classList.toggle('selected', plan === 'monthly');
       document.getElementById('pp-yearly').classList.toggle('selected', plan === 'yearly');
@@ -1202,49 +1181,6 @@
     function ppClearErr() {
       const el = document.getElementById('pp-auth-err');
       el.classList.remove('show');
-    }
-
-    /* ---- Google Login for Premium page ---- */
-    async function ppGoogleLogin() {
-      const btn = document.querySelector('.pp-google-btn');
-      if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
-      try {
-        if (typeof window.googleLogin !== 'function') {
-          ppShowErr('Google Sign-In not available. Try username/password.');
-          return;
-        }
-        const _origClose = window.closeAuth;
-        const _origInit = window.initAuthState;
-        const _origToast = window.showToast;
-        window.closeAuth = () => {};
-        window.initAuthState = () => {};
-        window.showToast = () => {};
-
-        const prevToken = localStorage.getItem('authToken');
-        await window.googleLogin();
-        const newToken = localStorage.getItem('authToken');
-
-        window.closeAuth = _origClose || (() => {});
-        window.initAuthState = _origInit || (() => {});
-        window.showToast = _origToast || (() => {});
-
-        if (newToken) {
-          if (localStorage.getItem('isPremium') === 'true') {
-            window.location.href = '/?premium=already';
-            return;
-          }
-          ppUpdateCheckout();
-          ppGoStep(3);
-        }
-      } catch(e) {
-        ppShowErr('Google sign-in failed. Try again.');
-      } finally {
-        const btn2 = document.querySelector('.pp-google-btn');
-        if (btn2) {
-          btn2.disabled = false;
-          btn2.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/><path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z" fill="#34A853"/><path d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z" fill="#FBBC05"/><path d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 6.29C4.672 4.163 6.656 3.58 9 3.58z" fill="#EA4335"/></svg> Continue with Google`;
-        }
-      }
     }
 
     /* ---- Signup OTP flow ---- */
@@ -1472,10 +1408,11 @@
       document.getElementById('pp-plan-price').textContent = `$${ppState.price}`;
 
       const username = localStorage.getItem('username') || '[your-username]';
-      const tgText = encodeURIComponent(
-        `Hello! I want to activate ${ppState.plan} Premium for username: ${username}. My Tx hash: `
-      );
-      document.getElementById('pp-tg-link').href = `https://t.me/unknownlll2829?text=${tgText}`;
+      const payLink = document.getElementById('pp-pay-link');
+      if (payLink) {
+        const subject = encodeURIComponent(`Premium Payment — ${ppState.plan} — ${username}`);
+        payLink.href = `mailto:support@unkn0wn.qzz.io?subject=${subject}`;
+      }
 
       // Hide "Back" on step 3 when user is already logged in (skipped step 2)
       const backBtn = document.getElementById('pp-back-from-checkout');
@@ -1513,6 +1450,5 @@
         .catch(() => alert('Please copy manually: ' + addr));
     }
   </script>
-  <script type="module" src="/google-auth.js"></script>
 </body>
 </html>

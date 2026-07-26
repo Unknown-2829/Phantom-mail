@@ -1,11 +1,15 @@
 {
+  "id": "/",
   "name": "Phantom Mail",
   "short_name": "PhantomMail",
   "description": "Free disposable temporary email. Invisible. Anonymous.",
+  "scope": "/",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a1f",
-  "theme_color": "#00d09c",
+  "orientation": "portrait-primary",
+  "background_color": "#07080f",
+  "theme_color": "#00e5b3",
+  "categories": ["productivity", "utilities"],
   "icons": [
     {
       "src": "https://assets.unknowns.app/android-192.png",
@@ -17,6 +21,20 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Address",
+      "url": "/?action=generate"
+    },
+    {
+      "name": "Inbox",
+      "url": "/?action=inbox"
+    },
+    {
+      "name": "Compose",
+      "url": "/?action=compose"
     }
   ]
 }

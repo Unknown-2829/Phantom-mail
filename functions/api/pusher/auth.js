@@ -6,9 +6,12 @@
  * so the client can subscribe to private inbox/user/system channels.
  *
  * Channels:
- *   private-inbox-{sha256short(address)} — per-address inbox (real-time email delivery)
- *   private-user-{sha256short(userKey)}  — per-user channel (payment confirmations, alerts)
- *   private-system                        — system-wide announcements (all authenticated users)
+ *   private-inbox-{sha256hex(address).slice(0,32)} — per-address inbox (real-time email delivery)
+ *   private-user-{sha256hex(userKey).slice(0,32)}  — per-user channel (payment confirmations, alerts)
+ *   private-system                                  — system-wide announcements (all authenticated users)
+ *
+ * Hash convention (MUST match email-handler/worker.js + webhooks/payment.js):
+ *   suffix = sha256hex(input.toLowerCase().trim()).slice(0, 32)
  *
  * Security:
  *   - Session token required (Bearer header)
@@ -22,7 +25,7 @@
 
 async function sha256Short(str) {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str.toLowerCase().trim()));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 32);
 }
 
 async function hmacSha256Hex(secret, message) {

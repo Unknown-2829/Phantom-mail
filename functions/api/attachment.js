@@ -16,14 +16,19 @@ export async function onRequestGet(context) {
     const filename = lastPart.replace(/^\d+_\d+_/, '');
 
     const contentType = obj.httpMetadata?.contentType || 'application/octet-stream';
-    const isPdf   = contentType === 'application/pdf';
-    const isImage = contentType.startsWith('image/');
-    const isText  = contentType.startsWith('text/');
 
-    // PDFs, images and plain text render inline; everything else forces a download.
-    const disposition = (isPdf || isImage || isText)
+    // STRICT inline allowlist — only these types are ever served with
+    // Content-Disposition: inline. Everything else (text/html, any text/*,
+    // image/svg+xml, application/xml, application/xhtml+xml, etc.) is forced
+    // to download so a script-executable type can never render in the origin.
+    const INLINE_ALLOWLIST = new Set([
+        'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'application/pdf'
+    ]);
+    const canInline = INLINE_ALLOWLIST.has(contentType.split(';')[0].trim().toLowerCase());
+
+    const disposition = canInline
         ? `inline; filename*=UTF-8''${encodeURIComponent(filename)}`
-        : `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`;
+        : `attachment; filename="${filename.replace(/["\\]/g, '_')}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 
     const headers = {
         'Content-Type': contentType,
@@ -33,7 +38,10 @@ export async function onRequestGet(context) {
         // Accept-Ranges enables download resume and media streaming.
         'Accept-Ranges': 'bytes',
         'Cache-Control': 'private, max-age=3600, immutable',
+        // Hardening: never sniff, never execute, never leak cross-origin.
         'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'Cross-Origin-Resource-Policy': 'same-origin',
     };
 
     // HEAD request — return headers only, no body.

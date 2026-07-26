@@ -97,6 +97,7 @@ export async function onRequestPost(context) {
         try { meta = JSON.parse(metaStr || '{}'); } catch (_) {}
 
         meta.claimedBy   = session.username;
+        meta.owner       = session.username; // ownership contract: session.username VERBATIM ('user:{normalized}')
         meta.claimedAt   = Date.now();
         meta.claimPubKey = publicKey; // store for future API re-verification
         meta.isSaved     = true;      // prevents auto-purge

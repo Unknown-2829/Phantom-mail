@@ -21,6 +21,11 @@ function domainKey(domain) {
     return domain.split('.')[0];
 }
 
+// Normalize a username/owner value: strip leading 'user:' and lowercase
+function normalizeUser(u) {
+    return String(u || '').replace(/^user:/, '').toLowerCase().trim();
+}
+
 export async function onRequestDelete(context) {
     try {
         const { request, env } = context;
@@ -44,6 +49,41 @@ export async function onRequestDelete(context) {
             return jsonResponse({ error: 'Forbidden: key does not belong to this address' }, 403);
         }
 
+        // ── Read meta once (ownership gate + saved/premium checks) ────────────
+        let isSaved   = false;
+        let isPremium = false;
+        let owner     = null;
+        let claimedBy = null;
+        const metaStr = await env.INBOX_META.get(`meta:${addressHash}`);
+        if (metaStr) {
+            try {
+                const meta = JSON.parse(metaStr);
+                isSaved   = !!meta.isSaved;
+                isPremium = !!meta.isPremium;
+                owner     = meta.owner || null;
+                claimedBy = meta.claimedBy || null;
+            } catch (_) {}
+        }
+
+        // ── Ownership gate: claimed/saved addresses require the owner session ──
+        const protectedAddr = !!metaStr && (isSaved || owner || claimedBy);
+        if (protectedAddr) {
+            const ownerVal = owner || claimedBy;
+            const authHeader = request.headers.get('Authorization') || '';
+            const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+            let allowed = false;
+            if (bearer) {
+                const session = await env.EMAILS.get(`session:${bearer}`, { type: 'json' });
+                if (session && session.expiresAt > Date.now() &&
+                    normalizeUser(session.username) === normalizeUser(ownerVal)) {
+                    allowed = true;
+                }
+            }
+            if (!allowed) {
+                return jsonResponse({ error: 'This address is claimed. Sign in as its owner.' }, 403);
+            }
+        }
+
         // Fetch email record to get attachment keys before deletion
         const emailRaw = await env.EMAILS.get(key);
         let attachmentKeys = [];
@@ -54,25 +94,14 @@ export async function onRequestDelete(context) {
             } catch (_) {}
         }
 
-        // Delete the email from KV
-        await env.EMAILS.delete(key);
-
-        // Delete all R2 attachments for this email
+        // Delete all R2 attachments FIRST — a crash here leaves a recoverable KV
+        // record rather than orphaned attachment blobs.
         if (env.ATTACHMENTS && attachmentKeys.length > 0) {
             await Promise.all(attachmentKeys.map(k => env.ATTACHMENTS.delete(k).catch(() => {})));
         }
 
-        // Check if address is saved/premium — if not, purge ALL remaining emails for this address
-        let isSaved   = false;
-        let isPremium = false;
-        const metaStr = await env.INBOX_META.get(`meta:${addressHash}`);
-        if (metaStr) {
-            try {
-                const meta = JSON.parse(metaStr);
-                isSaved   = !!meta.isSaved;
-                isPremium = !!meta.isPremium;
-            } catch (_) {}
-        }
+        // Then delete the email record from KV
+        await env.EMAILS.delete(key);
 
         // Immediate full purge for free/unsaved temp addresses (per data cleanup policy)
         // Only purge if there are no remaining emails (user deleted the last one),

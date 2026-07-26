@@ -2,10 +2,24 @@ name = "phantom-mail-admin"
 main = "worker.js"
 compatibility_date = "2024-01-01"
 
+# ── Required secrets (set via `wrangler secret put <NAME>`) ──────────────────
+#   ADMIN_PASSWORD     — admin login password (worker fails closed without it)
+#   RESEND_API_KEY     — Resend API key for security alerts + monthly reports
+#   PUSHER_SECRET      — Pusher app secret for announcement broadcasts
+# ── Optional secret ──────────────────────────────────────────────────────────
+#   ADMIN_TOTP_SECRET  — base32 TOTP bootstrap secret (KV-stored secret set via
+#                        /admin/totp/setup takes priority over this)
+
 [vars]
 MODE = "hosted"
 RESEND_QUOTA_LIMIT = "3000"
 ADMIN_REPORT_EMAIL = "admin@mail.unknowns.app"
+ADMIN_ALLOWED_ORIGIN = "https://mail.unknowns.app"
+
+# Public Pusher credentials (must match email-handler/wrangler.toml)
+PUSHER_APP_ID = "2179546"
+PUSHER_KEY = "c52890db708136e8b408"
+PUSHER_CLUSTER = "ap2"
 
 [[kv_namespaces]]
 binding = "EMAILS"
