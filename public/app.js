@@ -433,9 +433,12 @@ function _quotedOriginal(email) {
   const dateStr = formatDate(email.timestamp);
   const who = escapeHtml(sender.name || sender.email || 'sender');
   const addr = escapeHtml(sender.email || '');
+  // htmlBody MUST go through sanitizeHtml (stored-XSS / token-theft guard); the
+  // plain-text fallback uses textBody (the field the ingest worker actually stores;
+  // email.body is legacy and never set) escaped with newlines preserved.
   const original = email.htmlBody
     ? sanitizeHtml(email.htmlBody)
-    : escapeHtml(email.body || '').replace(/\n/g, '<br>');
+    : escapeHtml(email.textBody || email.body || '').replace(/\n/g, '<br>');
   return `<br><br>`
     + `<div class="quoted-reply" style="border-left:3px solid #3a4150;margin:0;padding:2px 0 2px 12px;color:#8a94a6;">`
     + `<div style="font-size:12px;color:#64748b;margin-bottom:6px;">On ${escapeHtml(dateStr)}, ${who} &lt;${addr}&gt; wrote:</div>`
@@ -469,8 +472,10 @@ function _forwardEmail(email) {
     + `From: ${escapeHtml(sender.name || sender.email)} &lt;${escapeHtml(sender.email || '')}&gt;<br>`
     + `Date: ${escapeHtml(formatDate(email.timestamp))}<br>`
     + `Subject: ${escapeHtml(email.subject || '(No Subject)')}</div>`;
+  // Sanitize any quoted HTML (stored-XSS guard); text fallback uses the real
+  // worker field (textBody) escaped, with newlines preserved.
   const original = email.htmlBody ? sanitizeHtml(email.htmlBody)
-    : escapeHtml(email.body || '').replace(/\n/g, '<br>');
+    : escapeHtml(email.textBody || email.body || '').replace(/\n/g, '<br>');
   if (editorEl) editorEl.innerHTML = `<br>${header}${original}`;
   setTimeout(() => { const t = document.getElementById('compose-to'); if (t) t.focus(); }, 120);
 }
@@ -1250,6 +1255,16 @@ async function bulkAction(action) {
   const token = localStorage.getItem('authToken');
   const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
 
+  // ── Snapshot pre-mutation state so we can revert on total server failure. ──
+  const snapshot = {
+    emailsList: emailsList.slice(),
+    deletedIds: deletedIds.slice(),
+    readIds: readIds.slice(),
+    starredIds: starredIds.slice(),
+    // Per-email prior flags (read/starred) for the mutated objects.
+    flags: selected.map(e => ({ e, read: e.read, starred: e.starred }))
+  };
+
   // ── Optimistic UI update ──
   if (action === 'delete') {
     const keySet = new Set(keys);
@@ -1286,7 +1301,9 @@ async function bulkAction(action) {
   const serverKeys = selected.map(e => e._key).filter(k => typeof k === 'string' && k.startsWith('email:'));
   if (serverKeys.length === 0) { showToast(`${verb} ${selected.length}`, 'success'); return; }
 
-  // ── Fire the batched network calls (chunked ≤50) ──
+  // ── Fire the batched network calls (chunked ≤50). NOTE: the backend batch
+  // mark-read now PERSISTS (was a stub) — we rely on data.success, not local
+  // readIds alone. ──
   const chunks = _chunk(serverKeys, 50);
   let ok = 0, failed = 0;
   await Promise.all(chunks.map(async chunk => {
@@ -1302,12 +1319,47 @@ async function bulkAction(action) {
     } catch (_) { failed += chunk.length; }
   }));
 
-  // Keep the inbox cache in sync with the optimistic list.
-  try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+  if (failed === 0) {
+    // Fully persisted — keep the cache aligned with the optimistic list.
+    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+    showToast(`${verb} ${selected.length}`, 'success');
+  } else if (ok > 0) {
+    // Partial success — keep applied changes (individual failures are rare) but
+    // surface the partial result and refresh from the server to reconcile.
+    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+    showToast(`${verb} ${ok} · ${failed} failed`, 'info');
+  } else {
+    // Total failure — revert every optimistic mutation so the UI matches the server.
+    emailsList = snapshot.emailsList;
+    deletedIds = snapshot.deletedIds;
+    readIds = snapshot.readIds;
+    starredIds = snapshot.starredIds;
+    snapshot.flags.forEach(({ e, read, starred }) => { e.read = read; e.starred = starred; });
+    localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
+    localStorage.setItem('readIds', JSON.stringify(readIds));
+    localStorage.setItem('starredIds', JSON.stringify(starredIds));
+    updateTabTitle(emailsList.filter(e => !e.read).length);
+    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+    scheduleRender();
+    showToast(`Couldn't ${action} — try again`, 'error');
+  }
+}
 
-  if (failed === 0) showToast(`${verb} ${selected.length}`, 'success');
-  else if (ok > 0)  showToast(`${verb} ${ok} · ${failed} failed`, 'info');
-  else              showToast(`Couldn't ${action} — try again`, 'error');
+// ── PATCH /api/email helper (read / starred / archived) ───────
+// Single source of truth for per-email state persistence. Resolves to the parsed
+// response on success; THROWS on any non-2xx so callers can revert optimistic UI.
+async function _patchEmail(key, address, fields) {
+  const token = localStorage.getItem('authToken');
+  const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
+  const res = await fetch('/api/email', {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ key, address: address || currentEmail, ...fields })
+  });
+  if (!res.ok) throw new Error('PATCH /api/email failed (' + res.status + ')');
+  // Keep the inbox cache aligned with the now-persisted state.
+  try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+  return res.json().catch(() => ({}));
 }
 
 // ── Single-row star toggle → PATCH /api/email ─────────────────
@@ -1323,19 +1375,11 @@ async function toggleStar(event, index) {
   localStorage.setItem('starredIds', JSON.stringify(starredIds));
   scheduleRender();
 
-  if (!email._key) return; // nothing to persist server-side
+  if (!email._key) return; // local-only row — nothing to persist server-side
   try {
-    const token = localStorage.getItem('authToken');
-    const headers = { 'Content-Type': 'application/json', ...(token ? { 'Authorization': `Bearer ${token}` } : {}) };
-    const res = await fetch('/api/email', {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ key: email._key, address: email.to || currentEmail, starred: next })
-    });
-    if (!res.ok) throw new Error('star failed');
-    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+    await _patchEmail(email._key, email.to || currentEmail, { starred: next });
   } catch (_) {
-    // Revert on failure
+    // Revert on failure so the UI never shows a state the server rejected.
     email.starred = !next;
     if (!next && !starredIds.includes(id)) starredIds.push(id);
     if (next) starredIds = starredIds.filter(s => s !== id);
@@ -1487,12 +1531,21 @@ async function viewEmail(index) {
   if (sourceBtn) sourceBtn.classList.remove('hidden');
 
   currentViewIndex = index;
+  const wasUnread = !email.read;
   email.read = true;
 
   const id = email._key || email.id || email.timestamp;
   if (!readIds.includes(id)) {
     readIds.push(id);
     localStorage.setItem('readIds', JSON.stringify(readIds));
+  }
+
+  // Persist read-on-open to the server so it survives across devices / next poll.
+  // Optimistic: UI already shows read; on failure we do NOT revert the read flag
+  // (a stale unread on reopen is harmless and re-PATCHes), but the local readIds
+  // mirror keeps it read for this client regardless.
+  if (wasUnread && email._key && email._key.startsWith('email:')) {
+    _patchEmail(email._key, email.to || currentEmail, { read: true }).catch(() => {});
   }
 
   updateTabTitle(emailsList.filter(e => !e.read).length);
@@ -1532,7 +1585,7 @@ async function viewEmail(index) {
   const body = document.getElementById('modal-body');
 
   // If the body content was stripped from the list response, fetch it now on demand
-  if (!email.htmlBody && !email.body && !email.rawSource && email._key) {
+  if (!email.htmlBody && !email.textBody && !email.body && !email.rawSource && email._key) {
     body.innerHTML = '<p style="color:#888;font-size:14px;text-align:center;padding:24px 0;">⏳ Loading…</p>';
     try {
       const params = new URLSearchParams({ key: email._key, address: email.to || currentEmail });
@@ -1925,9 +1978,17 @@ function _renderEmailBody(email, body) {
     body.innerHTML = '';
     const iframe = document.createElement('iframe');
     iframe.title = 'Email content';
-    // allow-scripts is needed for external images to load; scripts are blocked by the CSP meta below
-    iframe.setAttribute('sandbox', 'allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-scripts');
-    iframe.style.cssText = 'width:100%;border:none;display:block;min-height:200px;';
+    // SECURITY: untrusted email HTML is rendered STATICALLY (no scripts run), so the
+    // sandbox must include NEITHER allow-scripts NOR allow-same-origin — that pair
+    // together defeats the sandbox (script could reach the parent origin & steal the
+    // auth token). Images/styles/fonts load fine without scripts. We only keep the
+    // popup grants so that user-clicked links open in a new tab.
+    iframe.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+    // Because the hardened sandbox denies same-origin, the parent can no longer
+    // measure content height for pixel-perfect auto-sizing. Give the frame a
+    // comfortable default height and let it scroll internally for very tall mail,
+    // so nothing is ever clipped and there is no token-theft surface.
+    iframe.style.cssText = 'width:100%;border:none;display:block;min-height:70vh;height:70vh;max-height:82vh;overflow:auto;';
 
     // Add CSP meta to <head> — block scripts inside emails for security, but allow
     // all external HTTP + HTTPS images, fonts, styles, and media to load freely.
@@ -1946,29 +2007,27 @@ function _renderEmailBody(email, body) {
     iframe.srcdoc = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
     body.appendChild(iframe);
 
-    // Auto-resize iframe to its content height.
-    // scrollHeight is read from both documentElement and body for cross-browser accuracy.
+    // Defensive auto-resize: the hardened sandbox (UI-8) denies same-origin, so
+    // iframe.contentDocument is null cross-origin and this path is a safe no-op —
+    // the CSS min/max-height + internal scroll keep tall mail fully readable. If a
+    // future same-origin context ever applies, we still size the frame to content.
     const resizeIframe = () => {
       try {
-        const cd = iframe.contentDocument;
+        const cd = iframe.contentDocument; // null when cross-origin (expected)
         if (!cd) return;
         const h = Math.max(
           cd.documentElement.scrollHeight || 0,
           cd.body ? cd.body.scrollHeight : 0
         );
-        if (h > 0) iframe.style.height = h + 'px';
+        if (h > 0) { iframe.style.height = h + 'px'; iframe.style.maxHeight = 'none'; }
       } catch (e) {}
     };
     iframe.addEventListener('load', () => {
       resizeIframe();
-      // One fallback for late-loading images/fonts; cleared when ResizeObserver is active
-      let fallbackTimer = setTimeout(resizeIframe, 800);
-
-      // ResizeObserver for live accurate sizing (debounced 100ms)
+      setTimeout(resizeIframe, 400);
       try {
         if (typeof ResizeObserver !== 'undefined' && iframe.contentDocument?.body) {
           if (_iframeResizeObserver) _iframeResizeObserver.disconnect();
-          clearTimeout(fallbackTimer); // ResizeObserver handles live resizing
           let _roTimer = null;
           _iframeResizeObserver = new ResizeObserver(() => {
             clearTimeout(_roTimer);
@@ -1978,6 +2037,13 @@ function _renderEmailBody(email, body) {
         }
       } catch (e) {}
     });
+  } else if (email.textBody) {
+    // Plain-text mail (OTP / CI / CLI — the core temp-mail case). The ingest worker
+    // stores textBody (never body/rawSource), so this branch MUST come before the
+    // legacy body/rawSource fallbacks or plain-text mail renders as "No content".
+    // Rendered as escaped, newline-preserved plain text (same sandboxed style path).
+    const text = cleanBrokenChars(email.textBody);
+    body.innerHTML = `<div style="white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;overflow-x:hidden;font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',Arial,sans-serif;font-size:14px;line-height:1.6;color:#333;">${linkify(escapeHtml(text))}</div>`;
   } else if (email.body) {
     let text = cleanBrokenChars(email.body);
     body.innerHTML = `<div style="white-space:pre-wrap;word-break:break-word;overflow-wrap:break-word;overflow-x:hidden;font-family:'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',Arial,sans-serif;font-size:14px;line-height:1.6;color:#333;">${linkify(escapeHtml(text))}</div>`;
@@ -2234,46 +2300,55 @@ function closeModal() {
 
 async function deleteCurrentEmail() {
   if (currentViewIndex < 0) return;
-  const email = emailsList[currentViewIndex];
+  const removeIndex = currentViewIndex;
+  const email = emailsList[removeIndex];
   if (!email) return;
 
-  // Server-side delete (KV + R2 attachments)
-  if (email._key) {
-    try {
-      const params = new URLSearchParams({ key: email._key, address: email.to || currentEmail });
-      // Attach any R2 attachment keys for cleanup
-      if (email.attachments) {
-        email.attachments.forEach(att => {
-          if (att.key) params.append('r2key', att.key);
-        });
-      }
-      const res = await fetch(`/api/delete?${params}`, { method: 'DELETE' });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        console.error('Server delete failed:', errData.error || res.status);
-        showToast('❌ Could not delete from server');
-        return; // Don't remove from local list if server delete failed
-      }
-    } catch (e) {
-      console.error('Server delete failed:', e);
-      showToast('❌ Delete failed — check connection');
-      return;
-    }
-  }
-
-  // Local state cleanup
   const id = email._key || email.id || email.timestamp;
-  if (!deletedIds.includes(id)) {
+  const deletedIdRecorded = !deletedIds.includes(id);
+
+  // ── Optimistic UI: remove the row + record the id so the next poll can't
+  // resurrect it, close the reader, and toast immediately. ──
+  if (deletedIdRecorded) {
     deletedIds.push(id);
     localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
   }
-  emailsList.splice(currentViewIndex, 1);
+  emailsList.splice(removeIndex, 1);
   _pruneSelection();
   if (_kbCursor >= emailsList.length) _kbCursor = emailsList.length - 1;
   updateTabTitle(emailsList.filter(e => !e.read).length);
+  try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
   scheduleRender();
   closeModal();
   showToast('Deleted', 'success');
+
+  // Local-only row (no KV key) → nothing to persist server-side.
+  if (!email._key) return;
+
+  // ── Server-side delete (KV + R2 attachments). On failure, re-add the row
+  // and un-record the id so it reappears — never silently drop. ──
+  try {
+    const params = new URLSearchParams({ key: email._key, address: email.to || currentEmail });
+    if (email.attachments) {
+      email.attachments.forEach(att => { if (att.key) params.append('r2key', att.key); });
+    }
+    const res = await fetch(`/api/delete?${params}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('server delete failed (' + res.status + ')');
+  } catch (e) {
+    console.error('Server delete failed:', e);
+    // Revert: restore the id list + the row at its original position.
+    if (deletedIdRecorded) {
+      deletedIds = deletedIds.filter(d => d !== id);
+      localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
+    }
+    if (!emailsList.some((e, i) => _emailKey(e, i) === (email._key || id))) {
+      emailsList.splice(Math.min(removeIndex, emailsList.length), 0, email);
+    }
+    updateTabTitle(emailsList.filter(e => !e.read).length);
+    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+    scheduleRender();
+    showToast('Could not delete — restored', 'error');
+  }
 }
 
 // ===== Source Toggle =====
@@ -2302,7 +2377,7 @@ function viewSource() {
   _isSourceView = true;
   _updateSourceBtn(true);
 
-  const source = email.rawSource || email.htmlBody || email.body || 'No source';
+  const source = email.rawSource || email.htmlBody || email.textBody || email.body || 'No source';
   const body = document.getElementById('modal-body');
 
   body.innerHTML = `

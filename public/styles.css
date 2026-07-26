@@ -65,7 +65,10 @@
   /* text */
   --text: #e2e8f0;
   --text-dim: #94a3b8;
-  --text-muted: #64748b;
+  /* UI-1: bumped from #64748b (3.6:1 on --surface-2 — fails WCAG AA) to #8b98a9
+     (5.9:1 on --surface-2, 6.4:1 on --bg) so muted body/label text meets AA 4.5:1
+     while staying visually distinct from --text-dim. */
+  --text-muted: #8b98a9;
 
   /* z-index scale — single authoritative stacking order.
      dropdowns < header < bottom nav < compose FAB < compose window <
@@ -3818,7 +3821,8 @@ body.has-selection .row-check { opacity: 1; }
 .toast-info .toast-ico { color: var(--accent); }
 
 /* Mobile: move to top-center so it clears the bottom nav + compose FAB entirely */
-@media (max-width: 860px) {
+/* UI-6: 859.98px (not 860px) so this never overlaps the min-width:860px desktop rules. */
+@media (max-width: 859.98px) {
   .toast {
     bottom: auto;
     top: calc(16px + env(safe-area-inset-top, 0px));
@@ -4356,6 +4360,25 @@ body.compose-open .bulk-bar { opacity: 0 !important; pointer-events: none !impor
     bottom: calc(var(--nav-height) + 16px);
     max-width: none;
   }
+
+  /* ── UI-5: 44×44 minimum touch targets on mobile ──────────────────────────
+     WCAG 2.5.5 / mobile HIG. Interactive icon buttons are 40×40 or smaller on
+     desktop for density; on <860px we grow their hit area to ≥44×44 (via
+     min-width/min-height or padding) WITHOUT resizing the visual glyph, so
+     desktop density is untouched. */
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  /* Address-card copy/regenerate/QR etc. + reader action buttons */
+  .action-link,
+  .action-link-reply,
+  .action-link-fwd,
+  .source-toggle-btn { min-height: 44px; display: inline-flex; align-items: center; }
+  /* Compose window controls (minimize / fullscreen / close / formatting) */
+  .cw-tool { min-width: 44px; min-height: 44px; }
+  /* Inbox row checkbox + star: grow the tappable cell to 44px (the visual box
+     stays 18px / 17px). The row grid columns widen to match. */
+  .email-row { grid-template-columns: 44px minmax(0, 1fr) 44px; }
+  .row-check,
+  .row-star { min-width: 44px; min-height: 44px; }
 }
 
 /* Compose window bottom-sheet on very narrow screens (< 560px) — spec rule */
