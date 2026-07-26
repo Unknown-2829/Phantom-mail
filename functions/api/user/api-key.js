@@ -129,17 +129,22 @@ async function handlePost(user, env, username, isPremium) {
     user.apiKeyCreatedAt = Date.now();
     await env.EMAILS.put(username, JSON.stringify(user));
 
-    // 24-hour grace period for the old key — keeps in-flight API calls working
+    // 24-hour grace period for the old key — keeps in-flight API calls working.
+    // The grace record always carries { replacedBy, userId, plan } so v1 handlers
+    // can resolve the key, enforce the right plan, and emit the deprecation
+    // warning. `deprecated:true` makes the state explicit for any reader.
     if (oldKey && oldKey !== newKey && env.API_KEYS) {
         const oldMeta = await env.API_KEYS.get(oldKey, { type: 'json' }).catch(() => null);
-        if (oldMeta) {
-            await env.API_KEYS.put(`apikey:grace:${oldKey}`, JSON.stringify({
-                ...oldMeta,
-                grace: true,
-                gracedAt: Date.now(),
-                replacedBy: newKey
-            }), { expirationTtl: 86400 }); // 24hr TTL
-        }
+        await env.API_KEYS.put(`apikey:grace:${oldKey}`, JSON.stringify({
+            ...(oldMeta || {}),
+            key:        oldKey,
+            userId:     oldMeta?.userId || username,
+            plan:       oldMeta?.plan   || plan,
+            grace:      true,
+            deprecated: true,
+            gracedAt:   Date.now(),
+            replacedBy: newKey
+        }), { expirationTtl: 86400 }); // 24hr TTL
         // Delete the primary slot now that the new key is live and user points at it
         await env.API_KEYS.delete(oldKey).catch(() => {});
     }

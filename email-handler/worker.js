@@ -180,6 +180,134 @@ async function triggerPusher(env, channel, eventName, data) {
     }
 }
 
+// ─── WEB PUSH (VAPID / RFC 8291 aes128gcm + RFC 8292) ──────────────────────────
+//
+// Self-contained copy of functions/api/push/send.js. Cross-project imports are
+// impossible (Pages Functions and this Worker are separate bundles), so the
+// VAPID sender is inlined here. Everything no-ops when VAPID_* env is unset.
+// Subscriptions live in EMAILS KV under `push:{userId}:{sha256hex(endpoint)}`,
+// written by functions/api/push/subscribe.js. userId === meta.owner ('user:...').
+
+function _b64urlToBytes(b64url) {
+    const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64url.length + 3) % 4);
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+function _bytesToB64url(bytes) {
+    const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    let bin = '';
+    for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function _concat(...chunks) {
+    let len = 0; for (const c of chunks) len += c.length;
+    const out = new Uint8Array(len); let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+}
+async function _hkdf(salt, ikm, info, length) {
+    const saltKey = await crypto.subtle.importKey('raw', salt, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const prkBuf  = await crypto.subtle.sign('HMAC', saltKey, ikm);
+    const prkKey  = await crypto.subtle.importKey('raw', prkBuf, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const t1      = await crypto.subtle.sign('HMAC', prkKey, _concat(info, new Uint8Array([1])));
+    return new Uint8Array(t1).slice(0, length);
+}
+async function _vapidJwt(env, audience, publicKeyBytes) {
+    const enc = new TextEncoder();
+    const header  = { typ: 'JWT', alg: 'ES256' };
+    const payload = {
+        aud: audience,
+        exp: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+        sub: env.VAPID_SUBJECT || 'mailto:support@unkn0wn.qzz.io'
+    };
+    const signingInput =
+        _bytesToB64url(enc.encode(JSON.stringify(header))) + '.' +
+        _bytesToB64url(enc.encode(JSON.stringify(payload)));
+    const key = await crypto.subtle.importKey(
+        'jwk',
+        { kty: 'EC', crv: 'P-256', d: env.VAPID_PRIVATE_KEY,
+          x: _bytesToB64url(publicKeyBytes.slice(1, 33)),
+          y: _bytesToB64url(publicKeyBytes.slice(33, 65)), ext: true },
+        { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']
+    );
+    const sigBuf = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(signingInput));
+    return signingInput + '.' + _bytesToB64url(new Uint8Array(sigBuf));
+}
+async function _encryptPush(payloadBytes, clientPub, clientAuth) {
+    const serverKeys = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const serverPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', serverKeys.publicKey));
+    const clientKey = await crypto.subtle.importKey('raw', clientPub, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+    const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: clientKey }, serverKeys.privateKey, 256));
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const enc = new TextEncoder();
+    const keyInfo = _concat(enc.encode('WebPush: info'), new Uint8Array([0]), clientPub, serverPubRaw);
+    const ikm = await _hkdf(clientAuth, shared, keyInfo, 32);
+    const cek   = await _hkdf(salt, ikm, _concat(enc.encode('Content-Encoding: aes128gcm'), new Uint8Array([0])), 16);
+    const nonce = await _hkdf(salt, ikm, _concat(enc.encode('Content-Encoding: nonce'),     new Uint8Array([0])), 12);
+    const aesKey = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM' }, false, ['encrypt']);
+    const plaintext = _concat(payloadBytes, new Uint8Array([2]));
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, tagLength: 128 }, aesKey, plaintext));
+    const rs = new Uint8Array([0x00, 0x00, 0x10, 0x00]); // recordSize = 4096
+    const idlen = new Uint8Array([serverPubRaw.length]); // 65
+    return _concat(salt, rs, idlen, serverPubRaw, ciphertext);
+}
+/** Fan out a Web Push to every subscription owned by userId. No-op if VAPID unset. */
+async function sendWebPushToUser(env, userId, payload) {
+    if (!env?.VAPID_PUBLIC_KEY || !env?.VAPID_PRIVATE_KEY || !env?.EMAILS || !userId) return;
+    let publicKeyBytes;
+    try {
+        publicKeyBytes = _b64urlToBytes(env.VAPID_PUBLIC_KEY);
+        if (publicKeyBytes.length !== 65 || publicKeyBytes[0] !== 0x04) return;
+    } catch (_) { return; }
+
+    const payloadBytes = new TextEncoder().encode(
+        typeof payload === 'string' ? payload : JSON.stringify(payload || {})
+    );
+
+    const prefix = `push:${userId}:`;
+    const names = [];
+    let cursor;
+    do {
+        const page = await env.EMAILS.list({ prefix, cursor });
+        for (const k of page.keys) names.push(k.name);
+        cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+
+    for (const key of names) {
+        try {
+            const sub = await env.EMAILS.get(key, { type: 'json' });
+            if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
+                await env.EMAILS.delete(key).catch(() => {});
+                continue;
+            }
+            const url = new URL(sub.endpoint);
+            const audience = `${url.protocol}//${url.host}`;
+            const body = await _encryptPush(payloadBytes, _b64urlToBytes(sub.keys.p256dh), _b64urlToBytes(sub.keys.auth));
+            const jwt  = await _vapidJwt(env, audience, publicKeyBytes);
+            const res  = await fetch(sub.endpoint, {
+                method: 'POST',
+                headers: {
+                    'TTL': '86400',
+                    'Content-Encoding': 'aes128gcm',
+                    'Content-Type': 'application/octet-stream',
+                    'Authorization': `vapid t=${jwt}, k=${_bytesToB64url(publicKeyBytes)}`
+                },
+                body
+            });
+            if (res.status === 404 || res.status === 410) {
+                await env.EMAILS.delete(key).catch(() => {});
+            } else if (!(res.status >= 200 && res.status < 300)) {
+                console.error(`[WebPush] endpoint ${res.status} for ${key}`);
+            }
+        } catch (e) {
+            // Per-subscription isolation — one failure never aborts the rest.
+            console.error(`[WebPush] send failed for ${key}:`, e.message);
+        }
+    }
+}
+
 /** Increment a daily analytics counter in INBOX_META KV */
 async function trackEvent(env, metric) {
     try {
@@ -535,6 +663,25 @@ export default {
             hasAttachments: attachmentsMeta.length > 0,
             hasCalendar, hasTnef, domain, dKey
         }));
+
+        // 8b. Web Push (VAPID) — background notification even when the tab/app is
+        //     closed. Only owned/claimed addresses have a push target: the owner is
+        //     meta.owner (or legacy meta.claimedBy) === the user record key
+        //     ('user:{normalized}') and the subscription-store prefix. Anonymous/
+        //     temp addresses have no owner, so we skip (nowhere to deliver).
+        //     Fire-and-forget + fully guarded: never blocks or fails mail storage,
+        //     and no-ops entirely when VAPID_* env is unset.
+        const pushOwner = metaOwner || metaClaimedBy;
+        if (pushOwner && env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY) {
+            ctx.waitUntil(
+                sendWebPushToUser(env, pushOwner, {
+                    title: 'Phantom Mail',
+                    body:  `New mail from ${message.from || 'unknown sender'}`,
+                    url:   '/',
+                    tag:   'phantom-mail'
+                }).catch(e => console.error('[WebPush] fan-out failed:', e?.message || e))
+            );
+        }
 
         // 9. Analytics
         ctx.waitUntil(trackEvent(env, 'emails_received'));

@@ -72,10 +72,14 @@ export async function onRequestGet(context) {
  * Body (JSON):
  *   from      - string, must end with @unkn0wn.qzz.io or @phant0m.qzz.io (and be owned by the session)
  *   to        - string or string[], recipient(s)
+ *   cc        - string or string[] (optional)
+ *   bcc       - string or string[] (optional)
  *   subject   - string
  *   body      - string (plain text or HTML)
  *   isHtml    - boolean
  *   replyTo   - string (optional)
+ *
+ *   to + cc + bcc share a combined cap of 10 recipients.
  */
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -115,7 +119,7 @@ export async function onRequestPost(context) {
     return jsonResponse({ error: 'Invalid JSON body' }, 400);
   }
 
-  const { from, to, subject, body: emailBody, isHtml, replyTo, attachments } = body;
+  const { from, to, subject, body: emailBody, isHtml, replyTo, attachments, cc, bcc } = body;
 
   // ── Validate ─────────────────────────────────────────────────
   if (!from || !to || !subject || !emailBody) {
@@ -180,6 +184,19 @@ export async function onRequestPost(context) {
     if (!r.includes('@') || r.length > 254) {
       return jsonResponse({ error: `Invalid recipient: ${r}` }, 400);
     }
+  }
+
+  // cc / bcc — optional, each validated like `to`. Accepts a string or an array
+  // of strings. to + cc + bcc share a combined cap of 10 recipients total.
+  const ccList  = cc  == null ? [] : (Array.isArray(cc)  ? cc  : [cc]);
+  const bccList = bcc == null ? [] : (Array.isArray(bcc) ? bcc : [bcc]);
+  for (const r of [...ccList, ...bccList]) {
+    if (typeof r !== 'string' || !r.includes('@') || r.length > 254) {
+      return jsonResponse({ error: `Invalid cc/bcc recipient: ${r}` }, 400);
+    }
+  }
+  if (recipients.length + ccList.length + bccList.length > 10) {
+    return jsonResponse({ error: 'Maximum 10 recipients total across to, cc and bcc' }, 400);
   }
 
   // Subject length
@@ -296,6 +313,8 @@ export async function onRequestPost(context) {
   const resendPayload = {
     from: `Phantom Mail <${from}>`,
     to: recipients,
+    ...(ccList.length  && { cc:  ccList  }),
+    ...(bccList.length && { bcc: bccList }),
     subject,
     html: finalHtml,
     ...(finalText && { text: finalText }),
@@ -346,6 +365,8 @@ export async function onRequestPost(context) {
     trackingId,
     from,
     to:            recipients,
+    cc:            ccList,
+    bcc:           bccList,
     subject,
     body:          emailBody.slice(0, 10000),
     isHtml,

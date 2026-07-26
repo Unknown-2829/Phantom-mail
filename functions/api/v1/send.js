@@ -41,15 +41,31 @@ export async function onRequestPost(context) {
 
     if (!env.API_KEYS) return jsonResponse({ error: 'Service unavailable' }, 503);
 
-    const keyData = await env.API_KEYS.get(apiKey, { type: 'json' });
+    let keyData = await env.API_KEYS.get(apiKey, { type: 'json' });
+
+    // Grace key fallback — a rotated key stays valid for 24h. Requests still
+    // work but carry an X-API-Warning header telling the caller to migrate.
+    if (!keyData) {
+        keyData = await env.API_KEYS.get(`apikey:grace:${apiKey}`, { type: 'json' }).catch(() => null);
+        if (keyData) keyData._grace = true;
+    }
     if (!keyData) return jsonResponse({ error: 'Invalid API key' }, 401);
+
+    // Deprecation warning header, applied to every response below once we know
+    // the key is a grace key (or was explicitly marked deprecated).
+    const warnHeaders = (keyData._grace || keyData.deprecated === true)
+        ? {
+            'X-API-Key-Status': 'grace-period',
+            'X-API-Warning': 'This API key is deprecated; it stops working in 24h. Use your new key.'
+          }
+        : {};
 
     // Pro only
     if (keyData.plan !== 'pro') {
         return jsonResponse({
             error: 'Send API requires a Pro API key (pm_pro_*). Upgrade at mail.unknowns.app',
             plan: keyData.plan
-        }, 403);
+        }, 403, warnHeaders);
     }
 
     // ── Daily rate limit ───────────────────────────────────────────────────
@@ -57,14 +73,14 @@ export async function onRequestPost(context) {
     const usageKey = `api_usage:v1send:${apiKey}:${today}`;
     const used     = parseInt((await env.INBOX_META?.get(usageKey)) || '0', 10);
     if (used >= DAILY_LIMIT) {
-        return jsonResponse({ error: 'Daily send limit reached', limit: DAILY_LIMIT, used }, 429);
+        return jsonResponse({ error: 'Daily send limit reached', limit: DAILY_LIMIT, used }, 429, warnHeaders);
     }
 
     // ── Resend global quota guard ──────────────────────────────────────────
     const quotaLimit = parseInt(env.RESEND_QUOTA_LIMIT || '3000', 10);
     const quotaUsed  = parseInt((await env.INBOX_META?.get(`analytics:emails_sent:${today}`)) || '0', 10);
     if (quotaUsed >= quotaLimit) {
-        return jsonResponse({ error: 'Global daily sending quota reached. Try again tomorrow.' }, 429);
+        return jsonResponse({ error: 'Global daily sending quota reached. Try again tomorrow.' }, 429, warnHeaders);
     }
 
     // ── Parse body ─────────────────────────────────────────────────────────
@@ -75,7 +91,7 @@ export async function onRequestPost(context) {
     const { from, to, subject, body: emailBody, isHtml, replyTo, cc, bcc, trackClicks = true } = body;
 
     if (!from || !to || !subject || !emailBody) {
-        return jsonResponse({ error: 'from, to, subject, body are required' }, 400);
+        return jsonResponse({ error: 'from, to, subject, body are required' }, 400, warnHeaders);
     }
 
     // ── Validate from domain ───────────────────────────────────────────────
@@ -83,7 +99,7 @@ export async function onRequestPost(context) {
     if (!ALLOWED_DOMAINS.includes(fromDomain)) {
         return jsonResponse({
             error: `from must end with: ${ALLOWED_DOMAINS.map(d => '@' + d).join(' or ')}`
-        }, 403);
+        }, 403, warnHeaders);
     }
 
     // ── From-ownership ─────────────────────────────────────────────────────
@@ -95,7 +111,7 @@ export async function onRequestPost(context) {
         ? await env.EMAILS.get(keyData.userId, { type: 'json' }).catch(() => null)
         : null;
     if (!ownerUser) {
-        return jsonResponse({ error: 'You can only send from an address you own.' }, 403);
+        return jsonResponse({ error: 'You can only send from an address you own.' }, 403, warnHeaders);
     }
     const fromNorm       = from.toLowerCase().trim();
     const currentNorm    = (ownerUser.currentAddress || '').toLowerCase().trim();
@@ -103,25 +119,38 @@ export async function onRequestPost(context) {
     const ownsFrom = fromNorm === currentNorm ||
         savedAddresses.some(e => (e.address || '').toLowerCase().trim() === fromNorm);
     if (!ownsFrom) {
-        return jsonResponse({ error: 'You can only send from an address you own.' }, 403);
+        return jsonResponse({ error: 'You can only send from an address you own.' }, 403, warnHeaders);
     }
 
-    // ── Validate recipients ────────────────────────────────────────────────
+    // ── Validate recipients (to + cc + bcc share a combined cap) ────────────
     const recipients = Array.isArray(to) ? to : [to];
     if (recipients.length === 0 || recipients.length > 5) {
-        return jsonResponse({ error: '1–5 recipients allowed' }, 400);
+        return jsonResponse({ error: '1–5 recipients allowed' }, 400, warnHeaders);
     }
     for (const r of recipients) {
         if (!r.includes('@') || r.length > 254) {
-            return jsonResponse({ error: `Invalid recipient: ${r}` }, 400);
+            return jsonResponse({ error: `Invalid recipient: ${r}` }, 400, warnHeaders);
         }
     }
 
-    if (subject.length > 998) return jsonResponse({ error: 'Subject too long (max 998 chars)' }, 400);
-    if (emailBody.length > 500000) return jsonResponse({ error: 'Body too large (max 500 KB)' }, 400);
+    // cc / bcc — optional, validated like `to`, contributing to a combined
+    // recipient cap of 10 across to + cc + bcc.
+    const ccList  = cc  == null ? [] : (Array.isArray(cc)  ? cc  : [cc]);
+    const bccList = bcc == null ? [] : (Array.isArray(bcc) ? bcc : [bcc]);
+    for (const r of [...ccList, ...bccList]) {
+        if (typeof r !== 'string' || !r.includes('@') || r.length > 254) {
+            return jsonResponse({ error: `Invalid cc/bcc recipient: ${r}` }, 400, warnHeaders);
+        }
+    }
+    if (recipients.length + ccList.length + bccList.length > 10) {
+        return jsonResponse({ error: 'Maximum 10 recipients total across to, cc and bcc' }, 400, warnHeaders);
+    }
+
+    if (subject.length > 998) return jsonResponse({ error: 'Subject too long (max 998 chars)' }, 400, warnHeaders);
+    if (emailBody.length > 500000) return jsonResponse({ error: 'Body too large (max 500 KB)' }, 400, warnHeaders);
 
     // ── Call Resend API ────────────────────────────────────────────────────
-    if (!env.RESEND_API_KEY) return jsonResponse({ error: 'Email service not configured' }, 503);
+    if (!env.RESEND_API_KEY) return jsonResponse({ error: 'Email service not configured' }, 503, warnHeaders);
 
     const trackingId = crypto.randomUUID().replace(/-/g, '');
 
@@ -140,8 +169,8 @@ export async function onRequestPost(context) {
         subject,
         [isHtml ? 'html' : 'text']: finalBody,
         ...(replyTo && { reply_to: replyTo }),
-        ...(cc && { cc: Array.isArray(cc) ? cc : [cc] }),
-        ...(bcc && { bcc: Array.isArray(bcc) ? bcc : [bcc] }),
+        ...(ccList.length  && { cc:  ccList  }),
+        ...(bccList.length && { bcc: bccList }),
         headers: { 'X-Mailer': 'Phantom Mail API v1', 'X-Tracking-ID': trackingId },
         tags: [
             { name: 'trackingId', value: trackingId },
@@ -191,7 +220,7 @@ export async function onRequestPost(context) {
         trackingId,
         usage: { today: used + 1, limit: DAILY_LIMIT },
         rateLimit: { limit: DAILY_LIMIT, remaining: DAILY_LIMIT - (used + 1), window: '24h' }
-    });
+    }, 200, warnHeaders);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -220,9 +249,9 @@ function rewriteLinksForTracking(html, trackingId, trackingDomain, sentLinks) {
     );
 }
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(data, status = 200, extraHeaders = {}) {
     return new Response(JSON.stringify(data), {
         status,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', ...extraHeaders }
     });
 }

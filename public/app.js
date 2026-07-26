@@ -188,6 +188,12 @@ function init() {
   // Claim CTA (no inline handler in HTML — wired here)
   document.getElementById('claim-cta')?.addEventListener('click', () => claimCurrentAddress());
 
+  // Mobile swipe-to-delete / swipe-to-star (delegated on #inbox-body).
+  _initInboxSwipe();
+
+  // Web push: feature-detect + reveal the Settings toggle (no permission ask here).
+  setupPushNotifications();
+
   // PWA shortcut actions (?action=generate|inbox|compose)
   handlePWAShortcuts();
 }
@@ -449,11 +455,17 @@ function _quotedOriginal(email) {
 function _replyToEmail(email) {
   if (!email) return;
   openCompose();
+  // Start fresh — a restored draft must not bleed into a reply.
+  _clearComposeChips();
+  const errBar = document.getElementById('compose-error');
+  if (errBar) { errBar.innerHTML = ''; errBar.classList.add('hidden'); }
   const sender = parseSender(email.from, email);
-  const toEl = document.getElementById('compose-to');
   const subEl = document.getElementById('compose-subject');
   const editorEl = document.getElementById('compose-editor');
-  if (toEl) toEl.value = sender.email || email.from || '';
+  // Seed the recipient as a chip (chips were just cleared).
+  const replyAddr = sender.email || email.from || '';
+  if (_isValidEmail(replyAddr)) { _addChip('to', replyAddr); }
+  else { const t = document.getElementById('compose-to'); if (t) t.value = replyAddr; }
   if (subEl) subEl.value = /^re:/i.test(email.subject || '') ? email.subject : 'Re: ' + (email.subject || '');
   if (editorEl) editorEl.innerHTML = _quotedOriginal(email);
   setTimeout(() => { const ed = document.getElementById('compose-editor'); if (ed) { ed.focus(); _placeCaretAtStart(ed); } }, 120);
@@ -462,10 +474,12 @@ function _replyToEmail(email) {
 function _forwardEmail(email) {
   if (!email) return;
   openCompose();
+  // Forward starts with an empty recipient list — clear any restored draft.
+  _clearComposeChips();
+  const errBar = document.getElementById('compose-error');
+  if (errBar) { errBar.innerHTML = ''; errBar.classList.add('hidden'); }
   const subEl = document.getElementById('compose-subject');
-  const toEl = document.getElementById('compose-to');
   const editorEl = document.getElementById('compose-editor');
-  if (toEl) toEl.value = ''; // Forward: recipient starts empty
   if (subEl) subEl.value = /^fwd:/i.test(email.subject || '') ? email.subject : 'Fwd: ' + (email.subject || '');
   const sender = parseSender(email.from, email);
   const header = `<div style="color:#64748b;font-size:12px;margin-bottom:8px;">`
@@ -535,6 +549,7 @@ function openSettings() {
   const m = document.getElementById('settings-modal');
   if (!m) return;
   _hydrateSettingsUI();
+  _hydratePushSettingUI().catch(() => {}); // reflect push support + subscription state
   m.classList.remove('hiding');
   m.classList.add('show');
   document.body.style.overflow = 'hidden';
@@ -1527,6 +1542,7 @@ async function viewEmail(index) {
   // Make sure the reader has action buttons visible (viewSentEmail hides some)
   document.getElementById('reader-reply-btn')?.classList.remove('hidden');
   document.getElementById('reader-forward-btn')?.classList.remove('hidden');
+  document.getElementById('reader-print-btn')?.classList.remove('hidden');
   // Restore source button visibility (may have been hidden by viewSentEmail)
   const sourceBtn = document.getElementById('source-toggle-btn');
   if (sourceBtn) sourceBtn.classList.remove('hidden');
@@ -1918,6 +1934,27 @@ function _renderEmailBody(email, body) {
       base.setAttribute('rel', 'noopener');
       doc.head.insertBefore(base, doc.head.firstChild);
     }
+
+    // ── External-link transparency (received mail) ───────────────────────────
+    // For every link with a real http(s) destination, surface the true target
+    // on hover (title=) and a subtle dotted underline affordance — WITHOUT
+    // rewriting the href or adding any tracking. Pure client-side visibility so
+    // the reader can see where a link actually goes before clicking.
+    doc.querySelectorAll('a[href]').forEach(a => {
+      const href = (a.getAttribute('href') || '').trim();
+      if (!/^https?:\/\//i.test(href)) return; // skip mailto:, #anchors, tel:, etc.
+      // Don't clobber an author-provided title; append the destination instead.
+      const existing = a.getAttribute('title');
+      a.setAttribute('title', existing ? `${existing} — ${href}` : `Opens: ${href}`);
+      a.setAttribute('rel', 'noopener noreferrer nofollow');
+      a.classList.add('ext-link');
+    });
+    // Style the affordance inside the sandboxed frame (scoped to .ext-link).
+    const extLinkStyle = doc.createElement('style');
+    extLinkStyle.textContent =
+      'a.ext-link{text-decoration-line:underline;text-decoration-style:dotted;text-underline-offset:2px;cursor:pointer;}' +
+      'a.ext-link:hover{text-decoration-style:solid;}';
+    doc.head.appendChild(extLinkStyle);
 
     // ── Inject comprehensive responsive reset CSS ────────────────────────────
     // Placed FIRST in <head> so email author <style> blocks load after and can
@@ -4503,11 +4540,18 @@ function openCompose() {
   }
 
   // ── Show window IMMEDIATELY (no awaiting anything) ──────────
-  document.getElementById('compose-to').value = '';
+  _clearComposeChips();
   document.getElementById('compose-subject').value = '';
   document.getElementById('compose-editor').innerHTML = '';
   document.getElementById('compose-textarea').value = '';
   document.getElementById('compose-error').classList.add('hidden');
+  document.getElementById('compose-draft-saved')?.classList.add('hidden');
+
+  // Recipient chips + tracking toggle + autosave (idempotent inits).
+  _initComposeChips();
+  _initComposeAutosave();
+  _loadComposeTrackDefault();
+  _syncComposeTrackUI();
 
   // Reset attachments
   composeAttachments = [];
@@ -4619,6 +4663,7 @@ async function _populateComposeFrom() {
 
 // ===== COMPOSE: Close =====
 function closeCompose() {
+  clearTimeout(_draftAutosaveTimer);
   _saveComposeDraft(); // save draft before clearing
   _popModalHistory();
   const fab = document.getElementById('compose-fab');
@@ -4656,11 +4701,252 @@ function closeCompose() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// COMPOSE: recipient chips + Cc/Bcc/Reply-To + tracking toggle
+// ═══════════════════════════════════════════════════════════════
+const _MAX_RECIPIENTS = 5;
+// Chip stores per field: { to:[], cc:[], bcc:[] }
+const _composeChips = { to: [], cc: [], bcc: [] };
+// Tracking toggle default (persisted). Default ON.
+let _composeTrack = true;
+
+// Basic but strict-enough email validation for a client-side gate.
+const _EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function _isValidEmail(addr) {
+  return typeof addr === 'string' && _EMAIL_RE.test(addr.trim());
+}
+
+// Map a chip field id ('to'|'cc'|'bcc') to its DOM pieces.
+function _chipEls(field) {
+  return {
+    wrap: document.getElementById(`compose-${field}-chips`),
+    input: document.getElementById(`compose-${field}`)
+  };
+}
+
+// Render the chip pills for one field (re-draws pills, keeps the live input).
+function _renderChips(field) {
+  const { wrap, input } = _chipEls(field);
+  if (!wrap || !input) return;
+  // Remove existing pill nodes (everything except the input).
+  wrap.querySelectorAll('.cw-chip').forEach(c => c.remove());
+  const frag = document.createDocumentFragment();
+  _composeChips[field].forEach((addr, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'cw-chip';
+    const label = document.createElement('span');
+    label.className = 'cw-chip-label';
+    label.textContent = addr;
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'cw-chip-x';
+    rm.setAttribute('aria-label', `Remove ${addr}`);
+    rm.title = 'Remove';
+    rm.textContent = '×';
+    rm.addEventListener('click', () => _removeChip(field, i));
+    chip.appendChild(label);
+    chip.appendChild(rm);
+    frag.appendChild(chip);
+  });
+  wrap.insertBefore(frag, input);
+  _updateChipLimitUI(field);
+}
+
+// Total recipients across to+cc+bcc must not exceed the send cap.
+function _totalChips() {
+  return _composeChips.to.length + _composeChips.cc.length + _composeChips.bcc.length;
+}
+
+function _updateChipLimitUI(field) {
+  const { input } = _chipEls(field);
+  if (!input) return;
+  const atMax = _totalChips() >= _MAX_RECIPIENTS;
+  input.disabled = atMax && !input.value;
+  input.placeholder = atMax
+    ? `Max ${_MAX_RECIPIENTS} recipients`
+    : (field === 'to' ? 'Recipients' : field === 'cc' ? 'Carbon copy' : 'Blind carbon copy');
+}
+
+// Add one address as a chip (dedupes, validates, enforces the cap).
+function _addChip(field, raw) {
+  const addr = (raw || '').trim().replace(/[,;]+$/, '');
+  if (!addr) return true;
+  if (!_isValidEmail(addr)) { showComposeError(`“${addr}” is not a valid email`); return false; }
+  if (_totalChips() >= _MAX_RECIPIENTS) { showComposeError(`Up to ${_MAX_RECIPIENTS} recipients total`); return false; }
+  const lower = addr.toLowerCase();
+  const already = ['to', 'cc', 'bcc'].some(f => _composeChips[f].some(a => a.toLowerCase() === lower));
+  if (already) return true; // silently ignore duplicates
+  _composeChips[field].push(addr);
+  _renderChips(field);
+  return true;
+}
+
+function _removeChip(field, idx) {
+  _composeChips[field].splice(idx, 1);
+  _renderChips(field);
+  _scheduleDraftSave();
+}
+
+// Commit whatever is in a field's input as chips (on Enter/comma/blur/paste).
+function _commitChipInput(field) {
+  const { input } = _chipEls(field);
+  if (!input) return true;
+  const parts = input.value.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return true;
+  let ok = true;
+  for (const p of parts) { if (!_addChip(field, p)) { ok = false; break; } }
+  if (ok) input.value = '';
+  _updateChipLimitUI(field);
+  _scheduleDraftSave();
+  return ok;
+}
+
+// Wire chip-input keyboard/paste/blur behaviour once per field.
+function _initChipInput(field) {
+  const { input } = _chipEls(field);
+  if (!input || input._chipInited) return;
+  input._chipInited = true;
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',' || e.key === ';') {
+      e.preventDefault();
+      _commitChipInput(field);
+    } else if (e.key === 'Backspace' && input.value === '' && _composeChips[field].length) {
+      // Backspace on an empty input removes the last chip.
+      _removeChip(field, _composeChips[field].length - 1);
+    }
+  });
+  input.addEventListener('paste', (e) => {
+    const text = (e.clipboardData || window.clipboardData)?.getData('text') || '';
+    if (/[,;\s]/.test(text)) {
+      e.preventDefault();
+      input.value = text;
+      _commitChipInput(field);
+    }
+  });
+  input.addEventListener('blur', () => _commitChipInput(field));
+}
+
+function _initComposeChips() {
+  ['to', 'cc', 'bcc'].forEach(_initChipInput);
+}
+
+// Reset all chip state + inputs (used by openCompose / discard).
+function _clearComposeChips() {
+  _composeChips.to = []; _composeChips.cc = []; _composeChips.bcc = [];
+  ['to', 'cc', 'bcc'].forEach(f => {
+    const { input } = _chipEls(f);
+    if (input) { input.value = ''; input.disabled = false; }
+    _renderChips(f);
+  });
+  const replyto = document.getElementById('compose-replyto');
+  if (replyto) replyto.value = '';
+  // Collapse the extra rows
+  const extra = document.getElementById('compose-extra-rows');
+  if (extra) extra.classList.add('hidden');
+  const ccbcc = document.getElementById('compose-ccbcc-btn');
+  if (ccbcc) ccbcc.classList.remove('active');
+}
+
+// Collect all recipient arrays + reply-to for the send payload.
+function _collectComposeRecipients() {
+  // Commit any typed-but-not-chipped text first.
+  ['to', 'cc', 'bcc'].forEach(f => {
+    const { input } = _chipEls(f);
+    const v = (input?.value || '').trim().replace(/[,;]+$/, '');
+    if (v && _isValidEmail(v) && _totalChips() < _MAX_RECIPIENTS) {
+      const lower = v.toLowerCase();
+      const dup = ['to', 'cc', 'bcc'].some(x => _composeChips[x].some(a => a.toLowerCase() === lower));
+      if (!dup) _composeChips[f].push(v);
+      if (input) input.value = '';
+    }
+  });
+  ['to', 'cc', 'bcc'].forEach(_renderChips);
+  const replyto = (document.getElementById('compose-replyto')?.value || '').trim();
+  return {
+    to: [..._composeChips.to],
+    cc: [..._composeChips.cc],
+    bcc: [..._composeChips.bcc],
+    replyTo: replyto
+  };
+}
+
+// Cc/Bcc/Reply-To disclosure.
+function toggleComposeCcBcc() {
+  const extra = document.getElementById('compose-extra-rows');
+  const btn = document.getElementById('compose-ccbcc-btn');
+  if (!extra) return;
+  const showing = !extra.classList.contains('hidden');
+  extra.classList.toggle('hidden', showing);
+  if (btn) btn.classList.toggle('active', !showing);
+  if (!showing) setTimeout(() => document.getElementById('compose-cc')?.focus(), 60);
+}
+
+// ── Tracking toggle ───────────────────────────────────────────
+function _loadComposeTrackDefault() {
+  try {
+    const v = localStorage.getItem('trackingDefault');
+    _composeTrack = v === null ? true : v !== 'false';
+  } catch (_) { _composeTrack = true; }
+  return _composeTrack;
+}
+function onComposeTrackChange(on) {
+  _composeTrack = !!on;
+  try { localStorage.setItem('trackingDefault', _composeTrack ? 'true' : 'false'); } catch (_) {}
+  const toggle = document.getElementById('compose-track-toggle');
+  if (toggle) toggle.classList.toggle('track-off', !_composeTrack);
+  const hint = document.getElementById('compose-track-hint');
+  if (hint) hint.textContent = _composeTrack
+    ? 'Recipients see when you open — off = private send.'
+    : "Recipients won't know when you open — private send.";
+  _scheduleDraftSave();
+}
+function _syncComposeTrackUI() {
+  const cb = document.getElementById('compose-track');
+  if (cb) cb.checked = _composeTrack;
+  onComposeTrackChange(_composeTrack);
+}
+
+// ── Draft "saved" indicator flash ─────────────────────────────
+let _draftSavedTimer = null;
+function _flashDraftSaved() {
+  const el = document.getElementById('compose-draft-saved');
+  if (!el) return;
+  el.classList.remove('hidden');
+  el.classList.add('show');
+  clearTimeout(_draftSavedTimer);
+  _draftSavedTimer = setTimeout(() => { el.classList.remove('show'); }, 1600);
+}
+
 // ===== COMPOSE: Draft save/restore =====
 const _DRAFT_KEY = 'composeDraft';
+let _draftAutosaveTimer = null;
+
+// Debounced autosave used by inputs (≈4s idle) — flashes the "Draft saved" chip.
+function _scheduleDraftSave() {
+  clearTimeout(_draftAutosaveTimer);
+  _draftAutosaveTimer = setTimeout(() => {
+    if (_saveComposeDraft()) _flashDraftSaved();
+  }, 4000);
+}
+
+// Attach input listeners so typing anywhere in compose triggers autosave.
+function _initComposeAutosave() {
+  const win = document.getElementById('compose-modal');
+  if (!win || win._autosaveInited) return;
+  win._autosaveInited = true;
+  const bind = id => {
+    const el = document.getElementById(id);
+    if (el) { el.addEventListener('input', _scheduleDraftSave); }
+  };
+  ['compose-to', 'compose-cc', 'compose-bcc', 'compose-replyto', 'compose-subject',
+   'compose-textarea', 'compose-custom-username'].forEach(bind);
+  const editor = document.getElementById('compose-editor');
+  if (editor) editor.addEventListener('input', _scheduleDraftSave);
+  const from = document.getElementById('compose-from');
+  if (from) from.addEventListener('change', _scheduleDraftSave);
+}
 
 function _saveComposeDraft() {
-  const to = (document.getElementById('compose-to')?.value || '').trim();
   const subject = (document.getElementById('compose-subject')?.value || '').trim();
   const body = composeIsHtml
     ? (document.getElementById('compose-editor')?.innerHTML || '')
@@ -4672,12 +4958,31 @@ function _saveComposeDraft() {
     : '';
   const from = document.getElementById('compose-from')?.value || '';
 
-  const hasContent = to || subject || (body && body.replace(/<[^>]*>/g, '').trim());
+  // Snapshot chips + any uncommitted input text (don't mutate chip state here).
+  const grab = (field) => {
+    const arr = [..._composeChips[field]];
+    const { input } = _chipEls(field);
+    const v = (input?.value || '').trim().replace(/[,;]+$/, '');
+    if (v && _isValidEmail(v) && !arr.some(a => a.toLowerCase() === v.toLowerCase())) arr.push(v);
+    return arr;
+  };
+  const to = grab('to');
+  const cc = grab('cc');
+  const bcc = grab('bcc');
+  const replyTo = (document.getElementById('compose-replyto')?.value || '').trim();
+
+  const hasContent = to.length || cc.length || bcc.length || subject ||
+    (body && body.replace(/<[^>]*>/g, '').trim());
   if (hasContent) {
-    localStorage.setItem(_DRAFT_KEY, JSON.stringify({ to, subject, body, isHtml: composeIsHtml, from, customUsername, savedAt: Date.now() }));
-  } else {
-    localStorage.removeItem(_DRAFT_KEY);
+    localStorage.setItem(_DRAFT_KEY, JSON.stringify({
+      to, cc, bcc, replyTo, subject, body,
+      isHtml: composeIsHtml, from, customUsername,
+      track: _composeTrack, savedAt: Date.now()
+    }));
+    return true;
   }
+  localStorage.removeItem(_DRAFT_KEY);
+  return false;
 }
 
 function _restoreComposeDraftIfAny() {
@@ -4689,12 +4994,33 @@ function _restoreComposeDraftIfAny() {
     // Only offer drafts newer than 7 days
     if (Date.now() - draft.savedAt > 7 * 24 * 3600 * 1000) { localStorage.removeItem(_DRAFT_KEY); return; }
 
-    const toEl = document.getElementById('compose-to');
     const subEl = document.getElementById('compose-subject');
     const editorEl = document.getElementById('compose-editor');
     const textareaEl = document.getElementById('compose-textarea');
 
-    if (draft.to && toEl) toEl.value = draft.to;
+    // Restore recipient chips (arrays). Back-compat: older drafts stored `to`
+    // as a single comma-separated string.
+    const asArr = (v) => Array.isArray(v)
+      ? v.filter(_isValidEmail)
+      : (typeof v === 'string' ? v.split(/[,;\s]+/).map(s => s.trim()).filter(_isValidEmail) : []);
+    _composeChips.to = asArr(draft.to);
+    _composeChips.cc = asArr(draft.cc);
+    _composeChips.bcc = asArr(draft.bcc);
+    ['to', 'cc', 'bcc'].forEach(_renderChips);
+
+    const replytoEl = document.getElementById('compose-replyto');
+    if (replytoEl && draft.replyTo) replytoEl.value = draft.replyTo;
+    // Reveal the Cc/Bcc/Reply-To rows if any of them held data.
+    if (_composeChips.cc.length || _composeChips.bcc.length || draft.replyTo) {
+      const extra = document.getElementById('compose-extra-rows');
+      const ccbcc = document.getElementById('compose-ccbcc-btn');
+      if (extra) extra.classList.remove('hidden');
+      if (ccbcc) ccbcc.classList.add('active');
+    }
+
+    // Restore tracking preference from the draft (falls back to the persisted default).
+    if (typeof draft.track === 'boolean') { _composeTrack = draft.track; _syncComposeTrackUI(); }
+
     if (draft.subject && subEl) subEl.value = draft.subject;
 
     if (draft.isHtml) {
@@ -4733,9 +5059,10 @@ function _restoreComposeDraftIfAny() {
 
 function discardComposeDraft() {
   localStorage.removeItem(_DRAFT_KEY);
+  clearTimeout(_draftAutosaveTimer);
   const errEl = document.getElementById('compose-error');
-  if (errEl) { errEl.textContent = ''; errEl.classList.add('hidden'); }
-  document.getElementById('compose-to').value = '';
+  if (errEl) { errEl.innerHTML = ''; errEl.classList.add('hidden'); }
+  _clearComposeChips();
   document.getElementById('compose-subject').value = '';
   document.getElementById('compose-editor').innerHTML = '';
   document.getElementById('compose-textarea').value = '';
@@ -5134,7 +5461,8 @@ async function sendComposedEmail() {
     }
   }
 
-  const to = document.getElementById('compose-to').value.trim();
+  // Gather recipient chips (commits any typed-but-not-chipped input).
+  const { to, cc, bcc, replyTo } = _collectComposeRecipients();
   const subject = document.getElementById('compose-subject').value.trim();
   const body = composeIsHtml
     ? document.getElementById('compose-editor').innerHTML
@@ -5145,8 +5473,27 @@ async function sendComposedEmail() {
 
   errEl.classList.add('hidden');
 
-  if (!to || !to.includes('@')) {
-    errEl.textContent = 'Enter a valid recipient email';
+  if (to.length === 0) {
+    errEl.textContent = 'Add at least one recipient';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  // Every collected address must validate (chips are pre-validated, but the
+  // Reply-To free-text field is not).
+  const allAddrs = [...to, ...cc, ...bcc];
+  const bad = allAddrs.find(a => !_isValidEmail(a));
+  if (bad) {
+    errEl.textContent = `“${bad}” is not a valid email`;
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (replyTo && !_isValidEmail(replyTo)) {
+    errEl.textContent = 'Reply-To is not a valid email';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (allAddrs.length > _MAX_RECIPIENTS) {
+    errEl.textContent = `Up to ${_MAX_RECIPIENTS} recipients total`;
     errEl.classList.remove('hidden');
     return;
   }
@@ -5188,7 +5535,18 @@ async function sendComposedEmail() {
     }
 
     const payload = {
-      from, to, subject, body, isHtml: composeIsHtml,
+      from,
+      // Arrays are the canonical shape (send.js accepts array or string); when a
+      // single recipient is present we also fall back to a plain string so any
+      // older backend path stays compatible.
+      to: to.length === 1 ? to[0] : to,
+      subject, body, isHtml: composeIsHtml,
+      ...(cc.length > 0 && { cc }),
+      ...(bcc.length > 0 && { bcc }),
+      ...(replyTo && { replyTo }),
+      // Tracking toggle: only send { track:false } when the user turned it OFF —
+      // send.js reads body.track === false to disable Resend open/click tracking.
+      ...(_composeTrack === false && { track: false }),
       ...(attachmentData.length > 0 && { attachments: attachmentData })
     };
     const res = await fetch('/api/send', {
@@ -5204,6 +5562,13 @@ async function sendComposedEmail() {
 
     if (res.ok) {
       showToast('Message sent', 'success');
+      // Clear all compose state BEFORE closing so closeCompose() doesn't
+      // re-persist a stale draft, then drop the draft key.
+      clearTimeout(_draftAutosaveTimer);
+      _clearComposeChips();
+      document.getElementById('compose-subject').value = '';
+      document.getElementById('compose-editor').innerHTML = '';
+      document.getElementById('compose-textarea').value = '';
       localStorage.removeItem(_DRAFT_KEY); // discard draft on successful send
       composeAttachments = [];
       renderComposeAttachments();
@@ -5370,6 +5735,7 @@ function viewSentEmail(index) {
   if (deleteLink) deleteLink.classList.add('hidden');
   document.getElementById('reader-reply-btn')?.classList.add('hidden');
   document.getElementById('reader-forward-btn')?.classList.add('hidden');
+  document.getElementById('reader-print-btn')?.classList.add('hidden');
 
   const toStr = Array.isArray(s.to) ? s.to.join(', ') : s.to;
   const opens = s.opens || 0;
@@ -5544,6 +5910,364 @@ function _toggleSentSource(index) {
   if (rendered) rendered.classList.toggle('hidden', _sentSourceVisible);
   if (sourceDiv) sourceDiv.classList.toggle('hidden', !_sentSourceVisible);
   if (btn) btn.textContent = _sentSourceVisible ? '📧 View Rendered' : '📄 View Source';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PRINT EMAIL — clean, chrome-free print view
+// The reader body renders in a hardened cross-origin sandbox iframe whose DOM
+// we cannot read, so we rebuild a clean printable document from the email
+// object directly (sanitized), open it in a new window and call print().
+// ═══════════════════════════════════════════════════════════════
+function printCurrentEmail() {
+  if (currentViewIndex < 0) return;
+  const email = emailsList[currentViewIndex];
+  if (!email) return;
+  _printEmailObject(email);
+}
+
+function _printEmailObject(email) {
+  const sender = parseSender(email.from, email);
+  const subject = email.subject || '(No Subject)';
+  const dateStr = formatDate(email.timestamp || email.sentAt);
+  const toStr = email.headers?.to || (Array.isArray(email.to) ? email.to.join(', ') : email.to) || '';
+
+  // Build the body: sanitized HTML when present, else escaped plain text.
+  let bodyHtml;
+  if (email.htmlBody) {
+    bodyHtml = sanitizeHtml(cleanBrokenChars(email.htmlBody));
+  } else {
+    const text = cleanBrokenChars(email.textBody || email.body || '');
+    bodyHtml = `<pre style="white-space:pre-wrap;word-break:break-word;font:inherit;margin:0;">${escapeHtml(text)}</pre>`;
+  }
+
+  const docHtml =
+    '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+    `<title>${escapeHtml(subject)}</title>` +
+    '<style>' +
+    '*{box-sizing:border-box;max-width:100%;}' +
+    'html,body{margin:0;padding:0;background:#fff;color:#111;' +
+    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;line-height:1.55;}" +
+    '.print-wrap{max-width:720px;margin:0 auto;padding:32px 28px;}' +
+    '.print-head{border-bottom:2px solid #111;padding-bottom:14px;margin-bottom:18px;}' +
+    '.print-subject{font-size:20px;font-weight:700;margin:0 0 10px;}' +
+    '.print-meta{font-size:13px;color:#333;margin:2px 0;}' +
+    '.print-meta b{color:#000;display:inline-block;min-width:54px;}' +
+    '.print-body{font-size:14px;color:#111;}' +
+    '.print-body img{max-width:100%;height:auto;}' +
+    '.print-body table{max-width:100%;border-collapse:collapse;}' +
+    '.print-body a{color:#0645ad;word-break:break-all;}' +
+    '.print-foot{margin-top:28px;padding-top:12px;border-top:1px solid #ccc;font-size:11px;color:#888;}' +
+    '@media print{.print-wrap{padding:0;}@page{margin:14mm;}}' +
+    '</style></head><body>' +
+    '<div class="print-wrap">' +
+    '<div class="print-head">' +
+    `<h1 class="print-subject">${escapeHtml(subject)}</h1>` +
+    `<p class="print-meta"><b>From</b> ${escapeHtml(sender.name ? sender.name + ' <' + sender.email + '>' : sender.email)}</p>` +
+    (toStr ? `<p class="print-meta"><b>To</b> ${escapeHtml(toStr)}</p>` : '') +
+    (dateStr ? `<p class="print-meta"><b>Date</b> ${escapeHtml(dateStr)}</p>` : '') +
+    '</div>' +
+    `<div class="print-body">${bodyHtml}</div>` +
+    '<div class="print-foot">Printed from Phantom Mail — No logs. No trackers. No history.</div>' +
+    '</div></body></html>';
+
+  const w = window.open('', '_blank', 'noopener,noreferrer,width=800,height=900');
+  if (!w) { showToast('Allow pop-ups to print', 'error'); return; }
+  w.document.open();
+  w.document.write(docHtml);
+  w.document.close();
+  // Wait for images/layout, then invoke the print dialog.
+  const doPrint = () => { try { w.focus(); w.print(); } catch (_) {} };
+  if (w.document.readyState === 'complete') setTimeout(doPrint, 350);
+  else w.addEventListener('load', () => setTimeout(doPrint, 350));
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MOBILE SWIPE — swipe inbox rows to Delete (left) / Star (right)
+// Only active <860px. Uses touch events with a horizontal-intent guard so
+// vertical scrolling is never hijacked. Haptic feedback is iOS-guarded.
+// ═══════════════════════════════════════════════════════════════
+const _SWIPE_BREAKPOINT = 860;
+const _SWIPE_TRIGGER = 72;   // px past which the action fires
+const _SWIPE_MAX = 96;       // clamp translate so the row can't fly off
+let _swipeInited = false;
+
+function _initInboxSwipe() {
+  if (_swipeInited) return;
+  _swipeInited = true;
+  const list = document.getElementById('inbox-body');
+  if (!list) return;
+
+  let row = null, startX = 0, startY = 0, dx = 0;
+  let horizontal = null;      // null=undecided, true=horizontal swipe, false=vertical scroll
+  let openRegion = null;
+
+  const onStart = (e) => {
+    if (window.innerWidth >= _SWIPE_BREAKPOINT) return;
+    const t = e.target.closest('.email-row');
+    if (!t) return;
+    // Ignore swipes that begin on the checkbox / star controls.
+    if (e.target.closest('.row-check') || e.target.closest('.row-star')) return;
+    row = t;
+    openRegion = row.querySelector('.email-open-region');
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    dx = 0;
+    horizontal = null;
+    row.classList.add('swiping');
+  };
+
+  const onMove = (e) => {
+    if (!row) return;
+    const cx = e.touches[0].clientX;
+    const cy = e.touches[0].clientY;
+    const ddx = cx - startX;
+    const ddy = cy - startY;
+    // Decide intent once we've moved a little.
+    if (horizontal === null) {
+      if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      horizontal = Math.abs(ddx) > Math.abs(ddy) + 4;
+      if (!horizontal) { _resetSwipeRow(row); row = null; return; }
+    }
+    if (!horizontal) return;
+    e.preventDefault(); // we own this gesture now — stop vertical scroll fighting
+    dx = Math.max(-_SWIPE_MAX, Math.min(_SWIPE_MAX, ddx));
+    row.style.setProperty('--swipe-dx', dx + 'px');
+    if (openRegion) openRegion.style.transform = `translateX(${dx}px)`;
+    // Reveal the correct action background based on direction + threshold.
+    const armed = Math.abs(dx) >= _SWIPE_TRIGGER;
+    row.classList.toggle('swipe-left', dx < 0);
+    row.classList.toggle('swipe-right', dx > 0);
+    row.classList.toggle('swipe-armed', armed);
+  };
+
+  const onEnd = () => {
+    if (!row) return;
+    const r = row, d = dx;
+    row = null;
+    if (horizontal && Math.abs(d) >= _SWIPE_TRIGGER) {
+      const idx = parseInt(r.getAttribute('data-idx'), 10);
+      haptic([12]);
+      if (d < 0) {
+        // Swipe-left → Delete (animate the row out, then delete by index).
+        r.classList.add('swipe-deleting');
+        setTimeout(() => { if (!Number.isNaN(idx)) deleteEmailByIndex(idx); }, 160);
+        return; // row will be removed by the re-render
+      } else {
+        // Swipe-right → Star.
+        if (!Number.isNaN(idx)) toggleStar(null, idx);
+      }
+    }
+    _resetSwipeRow(r);
+  };
+
+  list.addEventListener('touchstart', onStart, { passive: true });
+  list.addEventListener('touchmove', onMove, { passive: false });
+  list.addEventListener('touchend', onEnd, { passive: true });
+  list.addEventListener('touchcancel', onEnd, { passive: true });
+}
+
+function _resetSwipeRow(r) {
+  if (!r) return;
+  r.classList.remove('swiping', 'swipe-left', 'swipe-right', 'swipe-armed');
+  r.style.removeProperty('--swipe-dx');
+  const open = r.querySelector('.email-open-region');
+  if (open) open.style.transform = '';
+}
+
+// Delete an inbox email by its emailsList index (used by swipe). Mirrors
+// deleteCurrentEmail's optimistic + revert reliability, without depending on
+// the reader being open.
+async function deleteEmailByIndex(index) {
+  const email = emailsList[index];
+  if (!email) return;
+  const id = email._key || email.id || email.timestamp;
+  const deletedIdRecorded = !deletedIds.includes(id);
+  if (deletedIdRecorded) {
+    deletedIds.push(id);
+    localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
+  }
+  emailsList.splice(index, 1);
+  _pruneSelection();
+  if (_kbCursor >= emailsList.length) _kbCursor = emailsList.length - 1;
+  updateTabTitle(emailsList.filter(e => !e.read).length);
+  try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+  scheduleRender();
+  showToast('Deleted', 'success');
+
+  if (!email._key) return; // local-only row
+  try {
+    const params = new URLSearchParams({ key: email._key, address: email.to || currentEmail });
+    if (email.attachments) {
+      email.attachments.forEach(att => { if (att.key) params.append('r2key', att.key); });
+    }
+    const res = await fetch(`/api/delete?${params}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('server delete failed (' + res.status + ')');
+  } catch (e) {
+    // Revert: restore id + row.
+    if (deletedIdRecorded) {
+      deletedIds = deletedIds.filter(d => d !== id);
+      localStorage.setItem('deletedIds', JSON.stringify(deletedIds));
+    }
+    if (!emailsList.some((e, i) => _emailKey(e, i) === (email._key || id))) {
+      emailsList.splice(Math.min(index, emailsList.length), 0, email);
+    }
+    updateTabTitle(emailsList.filter(e => !e.read).length);
+    try { if (currentEmail) _cacheSet('inbox:' + currentEmail, emailsList, _CACHE_TTL.inbox); } catch (_) {}
+    scheduleRender();
+    showToast('Could not delete — restored', 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VAPID WEB PUSH — notifications while the app is closed
+// Contract: /api/config exposes push:{ publicKey, enabled }. On a user gesture
+// (Settings toggle) we request Notification permission, subscribe via the
+// service worker's PushManager with the VAPID public key, and POST the
+// subscription to /api/push/subscribe with the Bearer session. Everything
+// no-ops gracefully when VAPID is unset or the browser lacks support.
+// ═══════════════════════════════════════════════════════════════
+let _pushConfig = null; // { publicKey, enabled } from /api/config
+
+function _pushSupported() {
+  return 'serviceWorker' in navigator &&
+         'PushManager' in window &&
+         'Notification' in window;
+}
+
+// Convert a base64url VAPID key to the Uint8Array the PushManager expects.
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+// Read push config from /api/config (reuses the cached config when available).
+async function _fetchPushConfig() {
+  if (_pushConfig) return _pushConfig;
+  try {
+    let cfg = _cacheGet('config');
+    if (!cfg) {
+      const res = await fetch('/api/config');
+      if (res.ok) { cfg = await res.json(); _cacheSet('config', cfg, 5 * 60 * 1000); }
+    }
+    _pushConfig = (cfg && cfg.push) ? cfg.push : { publicKey: '', enabled: false };
+  } catch (_) {
+    _pushConfig = { publicKey: '', enabled: false };
+  }
+  return _pushConfig;
+}
+
+// Reflect push availability + current subscription state into the Settings row.
+async function _hydratePushSettingUI() {
+  const row = document.getElementById('setting-row-push');
+  const cb = document.getElementById('set-push');
+  const desc = document.getElementById('set-push-desc');
+  if (!row || !cb) return;
+
+  if (!_pushSupported()) { row.classList.add('hidden'); return; }
+  const cfg = await _fetchPushConfig();
+  if (!cfg.enabled || !cfg.publicKey) { row.classList.add('hidden'); return; }
+
+  row.classList.remove('hidden');
+  // Push subscriptions are stored per-account and require a session.
+  if (!localStorage.getItem('authToken')) {
+    cb.checked = false;
+    if (desc) desc.textContent = 'Sign in to get new-mail alerts even when the app is closed.';
+    return;
+  }
+  // Denied permission → show the toggle off + a hint (browser must reset it).
+  if (Notification.permission === 'denied') {
+    cb.checked = false;
+    if (desc) desc.textContent = 'Blocked in your browser settings. Re-enable notifications for this site.';
+    return;
+  }
+  if (desc) desc.textContent = 'Get notified about new mail even when the app is closed.';
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    cb.checked = !!sub;
+  } catch (_) { cb.checked = false; }
+}
+
+// Settings toggle handler — the required user gesture to request permission.
+async function onPushToggle(on) {
+  const cb = document.getElementById('set-push');
+  if (!on) { await _unsubscribePush(); return; }
+
+  if (!_pushSupported()) { showToast('Push not supported here', 'error'); if (cb) cb.checked = false; return; }
+  if (!localStorage.getItem('authToken')) { showToast('Sign in to enable push', 'info'); if (cb) cb.checked = false; return; }
+  const cfg = await _fetchPushConfig();
+  if (!cfg.enabled || !cfg.publicKey) { showToast('Push is not available', 'info'); if (cb) cb.checked = false; return; }
+
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      if (cb) cb.checked = false;
+      showToast(perm === 'denied' ? 'Notifications blocked' : 'Permission needed', 'info');
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(cfg.publicKey)
+      });
+    }
+    const ok = await _postPushSubscription(sub);
+    if (ok) { showToast('Push notifications on', 'success'); }
+    else { showToast('Could not enable push', 'error'); if (cb) cb.checked = false; }
+  } catch (e) {
+    if (cb) cb.checked = false;
+    showToast('Could not enable push', 'error');
+  }
+}
+
+async function _postPushSubscription(sub) {
+  try {
+    const token = localStorage.getItem('authToken');
+    const res = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify({ subscription: sub.toJSON ? sub.toJSON() : sub, address: currentEmail || null })
+    });
+    return res.ok;
+  } catch (_) { return false; }
+}
+
+async function _unsubscribePush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const token = localStorage.getItem('authToken');
+      // Best-effort server cleanup, then unsubscribe locally.
+      fetch('/api/push/subscribe', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({ endpoint: sub.endpoint })
+      }).catch(() => {});
+      await sub.unsubscribe().catch(() => {});
+    }
+    showToast('Push notifications off', 'info');
+  } catch (_) { /* no-op */ }
+}
+
+// Feature-detect + reveal the Settings toggle on boot (no permission request
+// here — that only happens on the user's explicit toggle gesture).
+function setupPushNotifications() {
+  if (!_pushSupported()) return;
+  _fetchPushConfig().then(() => { _hydratePushSettingUI().catch(() => {}); });
 }
 
 function _deleteSentEmailFromModal(index) {

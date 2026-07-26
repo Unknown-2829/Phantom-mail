@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Raw source — Phantom Mail</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root{
+      --bg:#07080f;--surface:#0d1117;--surface-2:#161b22;--border:rgba(255,255,255,0.08);
+      --border-strong:rgba(255,255,255,0.14);--accent:#00e5b3;--violet:#7c5cfc;--amber:#ffb703;
+      --danger:#f04438;--text:#e2e8f0;--text-dim:#94a3b8;--text-muted:#8b98a9;
+      --radius:12px;--radius-sm:8px;--font-body:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+      --font-display:'Space Grotesk','Inter',sans-serif;--font-mono:'JetBrains Mono',ui-monospace,monospace;
+      --ease:cubic-bezier(.22,1,.36,1);
+    }
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-body);min-height:100vh}
+    ::selection{background:var(--accent);color:#04251d}
+    ::-webkit-scrollbar{width:9px;height:9px}
+    ::-webkit-scrollbar-thumb{background:var(--surface-2);border-radius:99px}
+    ::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+    a{color:var(--accent);text-decoration:none}
+    .wrap{max-width:960px;margin:0 auto;padding:22px 20px 60px}
+    .topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+      position:sticky;top:0;z-index:5;padding:12px 0;margin-bottom:8px;
+      background:linear-gradient(180deg,var(--bg) 70%,transparent)}
+    .brand{display:flex;align-items:center;gap:10px;font-family:var(--font-display);font-weight:700;letter-spacing:.2px}
+    .brand .mail{color:var(--accent)}
+    .brand img{width:26px;height:26px;border-radius:7px}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+    .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 13px;border-radius:var(--radius-sm);
+      border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;font-weight:600;
+      cursor:pointer;transition:border-color var(--ease) .15s,background var(--ease) .15s,transform var(--ease) .1s}
+    .btn:hover{border-color:var(--border-strong);background:#1c2330}
+    .btn:active{transform:scale(.97)}
+    .btn.primary{background:var(--accent);color:#04251d;border-color:transparent}
+    .btn.ghost{background:transparent}
+    .btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+    h1{font-family:var(--font-display);font-size:16px;margin:6px 0 2px;font-weight:600}
+    .sub{color:var(--text-muted);font-size:12.5px;margin-bottom:16px}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+      overflow:hidden;margin-bottom:18px;backdrop-filter:blur(20px)}
+    .card-h{padding:10px 15px;border-bottom:1px solid var(--border);font-family:var(--font-display);
+      font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);
+      display:flex;align-items:center;justify-content:space-between}
+    pre{margin:0;padding:15px;font-family:var(--font-mono);font-size:12.5px;line-height:1.65;
+      white-space:pre-wrap;word-break:break-word;overflow-x:auto}
+    .hdr-name{color:var(--accent);font-weight:500}
+    .hdr-val{color:var(--text)}
+    .body-pre{color:var(--text-dim)}
+    .state{padding:60px 20px;text-align:center;color:var(--text-muted)}
+    .state.err{color:var(--danger)}
+    .spin{width:22px;height:22px;border:2.5px solid var(--surface-2);border-top-color:var(--accent);
+      border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .copied{color:var(--accent)!important;border-color:var(--accent)!important}
+    @media(max-width:560px){.wrap{padding:16px 12px 50px}pre{font-size:11.5px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="brand">
+        <img src="https://assets.unknowns.app/logo.png" alt="" onerror="this.style.display='none'">
+        <span>PHANTOM <span class="mail">MAIL</span></span>
+      </div>
+      <div class="actions">
+        <button class="btn ghost" id="btn-copy">
+          <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          Copy all
+        </button>
+        <button class="btn primary" id="btn-eml">
+          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+          Download .eml
+        </button>
+      </div>
+    </div>
+
+    <h1>Raw message source</h1>
+    <div class="sub" id="sub">Reconstructed RFC&nbsp;822 view — headers and body as received.</div>
+
+    <div id="content">
+      <div class="state"><div class="spin"></div>Loading source…</div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    var qs = new URLSearchParams(location.search);
+    var key = qs.get('key');
+    var address = (qs.get('address') || '').toLowerCase().trim();
+    var content = document.getElementById('content');
+    var sub = document.getElementById('sub');
+    var rawText = '';
+
+    function esc(s){ return String(s).replace(/[&<>]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+
+    function fail(msg){
+      content.innerHTML = '<div class="state err">'+esc(msg)+'</div>';
+    }
+
+    if (!key || !address){ fail('Missing key or address in the URL.'); return; }
+
+    var token = null;
+    try { token = localStorage.getItem('authToken'); } catch(e){}
+    var headers = { 'Accept':'text/plain' };
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+
+    fetch('/api/email/raw?key=' + encodeURIComponent(key) + '&address=' + encodeURIComponent(address), { headers: headers })
+      .then(function(r){
+        if (r.status === 403) throw new Error('This address is claimed — open it while signed in as its owner.');
+        if (r.status === 404) throw new Error('Message not found (it may have expired).');
+        if (!r.ok) throw new Error('Could not load source (HTTP ' + r.status + ').');
+        return r.text();
+      })
+      .then(function(text){
+        rawText = text || '';
+        render(rawText);
+      })
+      .catch(function(e){ fail(e.message || 'Failed to load.'); });
+
+    function render(text){
+      // Split headers (up to first blank line) from the body.
+      var idx = text.search(/\r?\n\r?\n/);
+      var headerBlock = idx >= 0 ? text.slice(0, idx) : text;
+      var bodyBlock   = idx >= 0 ? text.slice(idx).replace(/^\r?\n\r?\n/, '') : '';
+
+      // Highlight header "Name:" prefixes.
+      var hdrHtml = esc(headerBlock).replace(/^([!-9;-~]+):/gm, '<span class="hdr-name">$1</span>:');
+
+      var html = ''
+        + '<div class="card"><div class="card-h">Headers</div>'
+        + '<pre>' + hdrHtml + '</pre></div>';
+      if (bodyBlock.trim().length){
+        html += '<div class="card"><div class="card-h">Body</div>'
+          + '<pre class="body-pre">' + esc(bodyBlock) + '</pre></div>';
+      }
+      content.innerHTML = html;
+      sub.textContent = 'Reconstructed RFC 822 view — ' + (text.length.toLocaleString()) + ' bytes.';
+    }
+
+    document.getElementById('btn-copy').addEventListener('click', function(){
+      var btn = this;
+      var done = function(){ btn.classList.add('copied'); var t=btn.querySelector('svg'); setTimeout(function(){btn.classList.remove('copied');},1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(rawText).then(done).catch(fallbackCopy);
+      } else fallbackCopy();
+      function fallbackCopy(){
+        var ta=document.createElement('textarea'); ta.value=rawText; document.body.appendChild(ta);
+        ta.select(); try{ document.execCommand('copy'); done(); }catch(e){} document.body.removeChild(ta);
+      }
+    });
+
+    document.getElementById('btn-eml').addEventListener('click', function(){
+      var blob = new Blob([rawText || ''], { type: 'message/rfc822' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      var name = (address ? address.split('@')[0] : 'message') + '.eml';
+      a.href = url; a.download = name; document.body.appendChild(a); a.click();
+      document.body.removeChild(a); setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+    });
+  })();
+  </script>
+</body>
+</html>

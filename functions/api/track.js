@@ -37,6 +37,31 @@ const BOT_UA_PATTERNS = [
     'barracuda', 'mimecast',
 ];
 
+// Known email-proxy / prefetch / scanner IP prefixes (matched against
+// CF-Connecting-IP). These fire from Gmail image prefetch, Apple Mail Privacy
+// Protection relays and search-engine crawlers — they are NOT a human opening
+// the mail, so we never count them as a genuine (unique) open.
+//   66.249.  → Google image proxy / Googlebot range
+//   17.      → Apple's owned /8 (Apple Mail Privacy Protection relays)
+//   66.102. / 64.233. / 72.14. / 74.125. / 209.85. / 172.217. / 108.177. →
+//              common Google/Gmail proxy CIDR leading octets
+const PROXY_IP_PREFIXES = [
+    '66.249.',
+    '17.',
+    '66.102.', '64.233.', '72.14.', '74.125.',
+    '209.85.', '172.217.', '108.177.',
+];
+
+// Minimum delay after send before an open is treated as genuine. Mailbox
+// providers prefetch/scan images within a second or two of delivery; a real
+// human open lands later. Opens inside this window are proxy/prefetch noise.
+const MIN_REAL_OPEN_DELAY_MS = 2000;
+
+function isProxyIp(ip) {
+    if (!ip || ip === 'unknown') return false;
+    return PROXY_IP_PREFIXES.some(p => ip.startsWith(p));
+}
+
 // ── Open Pixel ────────────────────────────────────────────────────────────────
 export async function onRequestGet(context) {
     const { request, env } = context;
@@ -76,9 +101,6 @@ async function recordOpen(trackingId, request, env) {
         const ua      = request.headers.get('User-Agent') || '';
         const uaLower = ua.toLowerCase();
 
-        // Filter out bot / email client proxy opens
-        if (BOT_UA_PATTERNS.some(p => uaLower.includes(p))) return;
-
         const sentKey = await env.EMAILS.get(`track:${trackingId}`);
         if (!sentKey) return;
 
@@ -88,6 +110,29 @@ async function recordOpen(trackingId, request, env) {
         const ip      = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || 'unknown';
         const country = request.headers.get('CF-IPCountry') || 'unknown';
         const city    = request.headers.get('CF-IPCity')    || '';
+
+        // ── Proxy / prefetch filtering ────────────────────────────────────────
+        // Two independent signals mark an event as machine (not human) prefetch:
+        //   1. A known bot / image-proxy User-Agent (Apple MPP, Gmail proxy, …)
+        //   2. A CF-Connecting-IP inside a known Google/Apple proxy range
+        //   3. An open that lands < ~2s after send (mailbox scanners are instant;
+        //      a real human read arrives later)
+        // Any of these → count it only as a proxyOpen, never as a unique/real open.
+        const sentAt      = record.sentAt || 0;
+        const tooSoon     = sentAt > 0 && (Date.now() - sentAt) < MIN_REAL_OPEN_DELAY_MS;
+        const isProxyOpen =
+            BOT_UA_PATTERNS.some(p => uaLower.includes(p)) ||
+            isProxyIp(ip) ||
+            tooSoon;
+
+        if (isProxyOpen) {
+            // Record separately for analytics visibility, but do NOT touch the
+            // real open / uniqueOpens counters or last-open snapshot.
+            record.proxyOpens = (record.proxyOpens || 0) + 1;
+            record.lastProxyOpenAt = Date.now();
+            await env.EMAILS.put(sentKey, JSON.stringify(record), { expirationTtl: 15 * 86400 });
+            return;
+        }
 
         // Hash IP for privacy — don't store raw IPs
         const ipHash  = await sha256Short(ip);

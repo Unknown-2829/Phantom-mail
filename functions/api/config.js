@@ -59,6 +59,16 @@ export async function onRequestGet(context) {
             enabled: !!(env.PUSHER_KEY)
         },
 
+        // ── Web Push (VAPID) ────────────────────────────────────────────────
+        // publicKey is the VAPID application server key the client feeds to
+        // sw.pushManager.subscribe({ applicationServerKey }). Empty string +
+        // enabled:false when VAPID keys are unset -> the client skips push and
+        // everything no-ops gracefully. Never throws when unset.
+        push: {
+            publicKey: env.VAPID_PUBLIC_KEY || '',
+            enabled:   !!env.VAPID_PUBLIC_KEY
+        },
+
         // ── Feature Flags ───────────────────────────────────────────────────
         features: {
             payments:          true,
@@ -66,6 +76,7 @@ export async function onRequestGet(context) {
             claimAddress:      true,
             attachments:       true,
             pusherRealTime:    !!(env.PUSHER_KEY),
+            webPush:           !!env.VAPID_PUBLIC_KEY,
             domainPicker:      true,
             batchEmailActions: true,
             keyboardShortcuts: true,

@@ -85,7 +85,10 @@ export async function onRequestGet(context) {
         'X-RateLimit-Window':    '24h',
         'Access-Control-Allow-Origin': '*'
     };
-    if (keyData._grace) rlHeaders['X-API-Key-Status'] = 'grace-period';
+    if (keyData._grace) {
+        rlHeaders['X-API-Key-Status'] = 'grace-period';
+        rlHeaders['X-API-Warning'] = 'This API key is deprecated; it stops working in 24h. Use your new key.';
+    }
 
     if (used >= dailyLimit) {
         return json({ error: 'Daily read limit reached', limit: dailyLimit, used }, 429, rlHeaders);

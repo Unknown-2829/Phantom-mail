@@ -23,8 +23,30 @@
 const BOT_UA_PATTERNS = [
     /bot/i, /crawler/i, /spider/i, /preview/i,
     /prefetch/i, /scan/i, /check/i, /monitor/i,
-    /headless/i, /phantom/i, /slurp/i, /baidu/i
+    /headless/i, /phantom/i, /slurp/i, /baidu/i,
+    /googleimageproxy/i
 ];
+
+// Known email-proxy / prefetch / scanner IP prefixes (matched against
+// CF-Connecting-IP). Gmail image proxy, Apple Mail Privacy Protection relays
+// and Google crawlers fire clicks/prefetches from these ranges — treat them as
+// machine hits so they never inflate click counts. The redirect ALWAYS still
+// happens; only the counting is suppressed.
+//   66.249.  → Google image proxy / Googlebot
+//   17.      → Apple /8 (Apple MPP relays)
+//   66.102. / 64.233. / 72.14. / 74.125. / 209.85. / 172.217. / 108.177. →
+//              common Google/Gmail proxy CIDR leading octets
+const PROXY_IP_PREFIXES = [
+    '66.249.',
+    '17.',
+    '66.102.', '64.233.', '72.14.', '74.125.',
+    '209.85.', '172.217.', '108.177.',
+];
+
+function isProxyIp(ip) {
+    if (!ip || ip === 'unknown') return false;
+    return PROXY_IP_PREFIXES.some(p => ip.startsWith(p));
+}
 
 async function sha256Hex(str) {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -96,9 +118,12 @@ export async function onRequestGet(context) {
     }
 
     const ua = request.headers.get('User-Agent') || '';
+    const ip = request.headers.get('CF-Connecting-IP') || '';
 
-    // ── Bot / prefetch detection ──────────────────────────────────────────────
-    if (isBot(ua)) {
+    // ── Bot / proxy / prefetch detection ──────────────────────────────────────
+    // Never block the redirect for anyone — only skip counting machine hits
+    // (bot UAs and Google/Apple proxy IP ranges) so click stats stay genuine.
+    if (isBot(ua) || isProxyIp(ip)) {
         // Redirect silently without recording
         return Response.redirect(dest, 302);
     }

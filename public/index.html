@@ -626,6 +626,10 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>
             <span>Forward</span>
           </button>
+          <button class="action-link action-link-print" id="reader-print-btn" onclick="printCurrentEmail()" title="Print this email">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            <span>Print</span>
+          </button>
           <button class="action-link" onclick="deleteCurrentEmail()">Delete</button>
           <button class="action-link" id="source-toggle-btn" title="View raw source — click again to return" onclick="viewSource()">Source</button>
         </div>
@@ -781,6 +785,14 @@
           <span class="switch"><input type="checkbox" id="set-kbd" onchange="onSettingChange('keyboardShortcuts', this.checked)"><span class="switch-track"></span></span>
         </label>
 
+        <label class="setting-row setting-row-push hidden" id="setting-row-push">
+          <div class="setting-text">
+            <span class="setting-label">Push notifications</span>
+            <span class="setting-desc" id="set-push-desc">Get notified about new mail even when the app is closed.</span>
+          </div>
+          <span class="switch"><input type="checkbox" id="set-push" onchange="onPushToggle(this.checked)"><span class="switch-track"></span></span>
+        </label>
+
         <div class="setting-row setting-row-select">
           <div class="setting-text">
             <span class="setting-label">Preferred domain</span>
@@ -869,11 +881,43 @@
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         </button>
       </div>
-      <div class="cw-field">
+      <div class="cw-field cw-field-chips">
         <span class="cw-field-label">To</span>
-        <input class="cw-input" id="compose-to" type="email"
-               placeholder="Recipients" autocomplete="off" autocorrect="off" spellcheck="false">
+        <div class="cw-chip-wrap" id="compose-to-chips">
+          <input class="cw-chip-input" id="compose-to" type="email"
+                 placeholder="Recipients" autocomplete="off" autocorrect="off" spellcheck="false"
+                 aria-label="Recipient email addresses">
+        </div>
+        <button class="cw-ccbcc-btn" id="compose-ccbcc-btn" type="button"
+                onclick="toggleComposeCcBcc()" title="Add Cc, Bcc and Reply-To">Cc Bcc</button>
       </div>
+
+      <!-- Collapsible Cc / Bcc / Reply-To rows -->
+      <div class="cw-extra-rows hidden" id="compose-extra-rows">
+        <div class="cw-field cw-field-chips">
+          <span class="cw-field-label">Cc</span>
+          <div class="cw-chip-wrap" id="compose-cc-chips">
+            <input class="cw-chip-input" id="compose-cc" type="email"
+                   placeholder="Carbon copy" autocomplete="off" autocorrect="off" spellcheck="false"
+                   aria-label="Cc email addresses">
+          </div>
+        </div>
+        <div class="cw-field cw-field-chips">
+          <span class="cw-field-label">Bcc</span>
+          <div class="cw-chip-wrap" id="compose-bcc-chips">
+            <input class="cw-chip-input" id="compose-bcc" type="email"
+                   placeholder="Blind carbon copy" autocomplete="off" autocorrect="off" spellcheck="false"
+                   aria-label="Bcc email addresses">
+          </div>
+        </div>
+        <div class="cw-field">
+          <span class="cw-field-label">Reply-To</span>
+          <input class="cw-input" id="compose-replyto" type="email"
+                 placeholder="Where replies go" autocomplete="off" autocorrect="off" spellcheck="false"
+                 aria-label="Reply-to email address">
+        </div>
+      </div>
+
       <div class="cw-field cw-field-subject">
         <input class="cw-subject-input" id="compose-subject"
                type="text" placeholder="Subject" maxlength="200">
@@ -910,6 +954,22 @@
 
       <!-- Error toast inside window -->
       <div class="cw-error hidden" id="compose-error"></div>
+    </div>
+
+    <!-- Options row: tracking toggle + draft-saved indicator -->
+    <div class="cw-options-row">
+      <label class="cw-track-toggle" id="compose-track-toggle" title="When off, recipients can't tell when you open — a private send.">
+        <span class="cw-track-ico" aria-hidden="true">🔍</span>
+        <span class="cw-track-text">
+          <span class="cw-track-label">Track opens</span>
+          <span class="cw-track-hint" id="compose-track-hint">Recipients see when you open — off = private send.</span>
+        </span>
+        <span class="switch cw-track-switch"><input type="checkbox" id="compose-track" checked onchange="onComposeTrackChange(this.checked)"><span class="switch-track"></span></span>
+      </label>
+      <span class="cw-draft-saved hidden" id="compose-draft-saved" aria-live="polite">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+        <span>Draft saved</span>
+      </span>
     </div>
 
     <!-- Toolbar + send footer -->
